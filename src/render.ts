@@ -5,15 +5,16 @@
 import { colors } from 'goke'
 import type { AnalysisResult, ToolGroup, StepInfo, ContextBreakdown, IndividualToolCall } from './analyze.ts'
 
-const BLOCK_CHARS = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
-
+// Only use █ (full block) and ▌ (left half block). The eighth-width
+// partial characters (▏▎▍▋▊▉) show visible gaps in most terminal fonts
+// because they don't fill the full cell height.
 function renderBar(value: number, maxValue: number, width: number): string {
   if (maxValue === 0) return ''
   const ratio = value / maxValue
-  const fullBlocks = Math.floor(ratio * width)
-  const remainder = (ratio * width - fullBlocks) * 8
-  const partialChar = remainder > 0 ? BLOCK_CHARS[Math.floor(remainder)] || '' : ''
-  return '█'.repeat(fullBlocks) + partialChar
+  const totalHalves = Math.round(ratio * width * 2)
+  const fullBlocks = Math.floor(totalHalves / 2)
+  const hasHalf = totalHalves % 2 === 1
+  return '█'.repeat(fullBlocks) + (hasHalf ? '▌' : '')
 }
 
 function formatNumber(n: number): string {

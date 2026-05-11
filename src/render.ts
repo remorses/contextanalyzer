@@ -210,11 +210,9 @@ function renderIndividualCallsHistogram(
     return lines.join('\n')
   }
 
-  // Total line budget ~110 chars. Bar(16) + value(8) + pct(6) + spacing(6) = 36.
-  // Rest goes to the label.
   const termWidth = process.stdout.columns || 120
-  const INDIVIDUAL_BAR_WIDTH = 16
-  const INDIVIDUAL_LABEL_WIDTH = Math.max(40, termWidth - 2 - INDIVIDUAL_BAR_WIDTH - 1 - 8 - 1 - 6)
+  const INDIVIDUAL_LABEL_WIDTH = Math.min(55, Math.floor(termWidth * 0.45))
+  const INDIVIDUAL_BAR_WIDTH = Math.max(10, termWidth - 2 - INDIVIDUAL_LABEL_WIDTH - 1 - 8 - 1 - 6)
   const getValue = (c: IndividualToolCall) => mode === 'chars' ? c.totalChars : c.durationMs
   const formatValue = (v: number) => mode === 'chars' ? formatNumber(v) : formatDuration(v)
   const maxValue = Math.max(...calls.map(getValue))

@@ -136,6 +136,12 @@ function renderContextBreakdown(ctx: ContextBreakdown): string {
   return lines.join('\n')
 }
 
+function groupedLabelWidth(groups: ToolGroup[], top: number): number {
+  const displayed = groups.slice(0, top)
+  const longest = Math.max(...displayed.map((g) => g.label.length))
+  return Math.min(longest + 2, 30)
+}
+
 function renderToolContextHistogram(groups: ToolGroup[], top: number): string {
   const lines: string[] = []
   lines.push(heading('Tool Context Usage (output + input chars)'))
@@ -146,6 +152,7 @@ function renderToolContextHistogram(groups: ToolGroup[], top: number): string {
     return lines.join('\n')
   }
 
+  const labelW = groupedLabelWidth(groups, top)
   const grandTotal = groups.reduce((s, g) => s + g.totalOutputChars + g.totalInputChars, 0)
   const maxValue = Math.max(...displayed.map((g) => g.totalOutputChars + g.totalInputChars))
 
@@ -155,7 +162,7 @@ function renderToolContextHistogram(groups: ToolGroup[], top: number): string {
     const pct = grandTotal > 0 ? ((total / grandTotal) * 100).toFixed(1) : '0.0'
     const detail = `(${group.count} calls)`
     lines.push(
-      `  ${padRight(group.label, 18)} ${colors.yellow(padRight(bar, BAR_WIDTH + 1))} ${padRight(formatNumber(total), 8)} ${colors.dim(padRight(`${pct}%`, 7))} ${colors.dim(detail)}`,
+      `  ${padRight(group.label, labelW)} ${colors.yellow(padRight(bar, BAR_WIDTH + 1))} ${padRight(formatNumber(total), 8)} ${colors.dim(padRight(`${pct}%`, 7))} ${colors.dim(detail)}`,
     )
   }
 
@@ -176,6 +183,7 @@ function renderToolDurationHistogram(groups: ToolGroup[], top: number): string {
     return lines.join('\n')
   }
 
+  const labelW = groupedLabelWidth(groups, top)
   const grandTotal = groups.reduce((s, g) => s + g.totalDurationMs, 0)
   const maxValue = Math.max(...displayed.map((g) => g.totalDurationMs))
 
@@ -185,7 +193,7 @@ function renderToolDurationHistogram(groups: ToolGroup[], top: number): string {
     const avg = group.count > 0 ? group.totalDurationMs / group.count : 0
     const detail = `(${group.count} calls, avg ${formatDuration(avg)}, max ${formatDuration(group.maxDurationMs)})`
     lines.push(
-      `  ${padRight(group.label, 18)} ${colors.magenta(padRight(bar, BAR_WIDTH + 1))} ${padRight(formatDuration(group.totalDurationMs), 8)} ${colors.dim(padRight(`${pct}%`, 7))} ${colors.dim(detail)}`,
+      `  ${padRight(group.label, labelW)} ${colors.magenta(padRight(bar, BAR_WIDTH + 1))} ${padRight(formatDuration(group.totalDurationMs), 8)} ${colors.dim(padRight(`${pct}%`, 7))} ${colors.dim(detail)}`,
     )
   }
 

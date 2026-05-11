@@ -1,0 +1,61 @@
+{
+  "name": "contextanalyzer",
+  "version": "0.1.0",
+  "description": "Analyze OpenCode session context usage and tool call performance with terminal histograms",
+  "type": "module",
+  "bin": "dist/cli.js",
+  "main": "./dist/analyze.js",
+  "types": "./dist/analyze.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/analyze.d.ts",
+      "default": "./dist/analyze.js"
+    },
+    "./src": {
+      "types": "./src/analyze.ts",
+      "default": "./src/analyze.ts"
+    },
+    "./src/*": {
+      "types": "./src/*.ts",
+      "default": "./src/*.ts"
+    }
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/remorses/contextanalyzer"
+  },
+  "homepage": "https://github.com/remorses/contextanalyzer",
+  "bugs": "https://github.com/remorses/contextanalyzer/issues",
+  "keywords": [
+    "opencode",
+    "context",
+    "analyzer",
+    "token",
+    "usage",
+    "cli",
+    "histogram"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "prepublishOnly": "rimraf dist \"*.tsbuildinfo\" && pnpm build"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.10.0",
+    "@opencode-ai/sdk": "^1.4.6",
+    "goke": "^6.10.0",
+    "just-bash": "^3.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

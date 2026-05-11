@@ -292,13 +292,8 @@ function processToolPart(
   }
 }
 
-const MAX_LABEL_LEN = 70
-
-function truncate(s: string, max: number) {
-  if (s.length <= max) return s
-  return s.slice(0, max - 1) + '…'
-}
-
+// Build a descriptive label for an individual tool call. No truncation here;
+// the renderer handles that based on available terminal width.
 function buildIndividualLabel(toolName: string, input?: Record<string, unknown>): string {
   if (!input) return toolName
 
@@ -306,61 +301,58 @@ function buildIndividualLabel(toolName: string, input?: Record<string, unknown>)
 
   if (lower === 'bash') {
     const cmd = typeof input.command === 'string' ? input.command.trim() : ''
-    return truncate(`bash: ${cmd}`, MAX_LABEL_LEN)
+    return `bash: ${cmd}`
   }
 
   if (lower === 'read') {
     const path = typeof input.filePath === 'string' ? input.filePath : ''
-    const short = path.split('/').slice(-2).join('/')
-    return truncate(`read: ${short}`, MAX_LABEL_LEN)
+    return `read: ${path}`
   }
 
   if (lower === 'write') {
     const path = typeof input.filePath === 'string' ? input.filePath : ''
-    const short = path.split('/').slice(-2).join('/')
-    return truncate(`write: ${short}`, MAX_LABEL_LEN)
+    return `write: ${path}`
   }
 
   if (lower === 'edit') {
     const path = typeof input.filePath === 'string' ? input.filePath : ''
-    const short = path.split('/').slice(-2).join('/')
-    return truncate(`edit: ${short}`, MAX_LABEL_LEN)
+    return `edit: ${path}`
   }
 
   if (lower === 'glob') {
     const pattern = typeof input.pattern === 'string' ? input.pattern : ''
-    return truncate(`glob: ${pattern}`, MAX_LABEL_LEN)
+    return `glob: ${pattern}`
   }
 
   if (lower === 'grep') {
     const pattern = typeof input.pattern === 'string' ? input.pattern : ''
-    return truncate(`grep: ${pattern}`, MAX_LABEL_LEN)
+    return `grep: ${pattern}`
   }
 
   if (lower === 'webfetch') {
     const url = typeof input.url === 'string' ? input.url : ''
-    return truncate(`webfetch: ${url}`, MAX_LABEL_LEN)
+    return `webfetch: ${url}`
   }
 
   if (lower === 'websearch' || lower === 'googlesearch') {
     const query = typeof input.query === 'string' ? input.query : ''
-    return truncate(`${lower}: ${query}`, MAX_LABEL_LEN)
+    return `${lower}: ${query}`
   }
 
   if (lower === 'task') {
     const desc = typeof input.description === 'string' ? input.description : ''
-    return truncate(`task: ${desc}`, MAX_LABEL_LEN)
+    return `task: ${desc}`
   }
 
   if (lower === 'skill') {
     const name = typeof input.name === 'string' ? input.name : ''
-    return truncate(`skill: ${name}`, MAX_LABEL_LEN)
+    return `skill: ${name}`
   }
 
   // Fallback: tool name + first string value from input
   const firstStr = Object.values(input).find((v) => typeof v === 'string')
   if (typeof firstStr === 'string') {
-    return truncate(`${toolName}: ${firstStr}`, MAX_LABEL_LEN)
+    return `${toolName}: ${firstStr}`
   }
 
   return toolName

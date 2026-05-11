@@ -292,7 +292,7 @@ function processToolPart(
   }
 }
 
-const MAX_LABEL_LEN = 50
+const MAX_LABEL_LEN = 70
 
 function truncate(s: string, max: number) {
   if (s.length <= max) return s

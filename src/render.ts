@@ -6,11 +6,11 @@ import type { AnalysisResult, ToolGroup, StepInfo, ContextBreakdown, IndividualT
 const BAR_WIDTH = 35
 const BLOCK_CHARS = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
 
-function renderBar(value: number, maxValue: number): string {
+function renderBar(value: number, maxValue: number, width = BAR_WIDTH): string {
   if (maxValue === 0) return ''
   const ratio = value / maxValue
-  const fullBlocks = Math.floor(ratio * BAR_WIDTH)
-  const remainder = (ratio * BAR_WIDTH - fullBlocks) * 8
+  const fullBlocks = Math.floor(ratio * width)
+  const remainder = (ratio * width - fullBlocks) * 8
   const partialChar = remainder > 0 ? BLOCK_CHARS[Math.floor(remainder)] || '' : ''
   return '█'.repeat(fullBlocks) + partialChar
 }
@@ -210,7 +210,8 @@ function renderIndividualCallsHistogram(
     return lines.join('\n')
   }
 
-  const LABEL_WIDTH = 52
+  const INDIVIDUAL_LABEL_WIDTH = 70
+  const INDIVIDUAL_BAR_WIDTH = 16
   const getValue = (c: IndividualToolCall) => mode === 'chars' ? c.totalChars : c.durationMs
   const formatValue = (v: number) => mode === 'chars' ? formatNumber(v) : formatDuration(v)
   const maxValue = Math.max(...calls.map(getValue))
@@ -218,13 +219,13 @@ function renderIndividualCallsHistogram(
 
   for (const call of calls) {
     const value = getValue(call)
-    const bar = renderBar(value, maxValue)
+    const bar = renderBar(value, maxValue, INDIVIDUAL_BAR_WIDTH)
     const pct = grandTotal > 0 ? ((value / grandTotal) * 100).toFixed(1) : '0.0'
-    const label = call.label.length > LABEL_WIDTH
-      ? call.label.slice(0, LABEL_WIDTH - 1) + '…'
+    const label = call.label.length > INDIVIDUAL_LABEL_WIDTH
+      ? call.label.slice(0, INDIVIDUAL_LABEL_WIDTH - 1) + '…'
       : call.label
     lines.push(
-      `  ${padRight(label, LABEL_WIDTH)} ${colorFn(padRight(bar, BAR_WIDTH + 1))} ${padRight(formatValue(value), 8)} ${colors.dim(`${pct}%`)}`,
+      `  ${padRight(label, INDIVIDUAL_LABEL_WIDTH)} ${colorFn(padRight(bar, INDIVIDUAL_BAR_WIDTH + 1))} ${padRight(formatValue(value), 8)} ${colors.dim(`${pct}%`)}`,
     )
   }
 

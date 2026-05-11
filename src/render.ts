@@ -270,8 +270,8 @@ function renderIndividualCallsHistogram(
   colorFn: (s: string) => string,
 ): string {
   const termWidth = process.stdout.columns || 120
-  const labelW = Math.min(55, Math.floor(termWidth * 0.45))
-  const barW = Math.min(20, Math.max(10, termWidth - 2 - labelW - 1 - 8 - 1 - 7))
+  const labelW = Math.min(70, Math.floor(termWidth * 0.55))
+  const barW = Math.min(20, Math.max(8, termWidth - 2 - labelW - 1 - 8 - 1 - 7))
 
   return renderHistogram({
     title,

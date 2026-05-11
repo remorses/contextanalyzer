@@ -1,12 +1,13 @@
 // ASCII histogram and summary rendering for terminal output.
+// All histogram sections share a single `renderHistogram` renderer
+// to keep layout consistent and avoid duplicated padding/bar logic.
 
 import { colors } from 'goke'
 import type { AnalysisResult, ToolGroup, StepInfo, ContextBreakdown, IndividualToolCall } from './analyze.ts'
 
-const BAR_WIDTH = 35
 const BLOCK_CHARS = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
 
-function renderBar(value: number, maxValue: number, width = BAR_WIDTH): string {
+function renderBar(value: number, maxValue: number, width: number): string {
   if (maxValue === 0) return ''
   const ratio = value / maxValue
   const fullBlocks = Math.floor(ratio * width)
@@ -42,8 +43,89 @@ function heading(title: string) {
   return `\n${colors.bold(colors.cyan(title))}\n${colors.dim(line)}`
 }
 
+/** Collapse newlines and excess whitespace into a single space. */
+function singleLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+function truncateLabel(s: string, width: number): string {
+  const text = singleLine(s)
+  if (text.length <= width) return text
+  if (width <= 1) return '…'
+  return text.slice(0, width - 1) + '…'
+}
+
 // ---------------------------------------------------------------------------
-// Public render functions
+// Reusable histogram renderer
+// ---------------------------------------------------------------------------
+
+type HistogramRow = {
+  label: string
+  value: number
+  detail?: string
+}
+
+type HistogramConfig = {
+  title: string
+  rows: HistogramRow[]
+  /** Total for percentage calculation. Defaults to sum of displayed rows. */
+  grandTotal?: number
+  barColor: (s: string) => string
+  formatValue: (value: number) => string
+  labelWidth: number
+  barWidth: number
+  emptyMessage?: string
+  moreCount?: number
+}
+
+function renderHistogram({
+  title,
+  rows,
+  grandTotal,
+  barColor,
+  formatValue,
+  labelWidth,
+  barWidth,
+  emptyMessage = 'No data found',
+  moreCount = 0,
+}: HistogramConfig): string {
+  const lines: string[] = []
+  lines.push(heading(title))
+
+  if (rows.length === 0) {
+    lines.push(`  ${emptyMessage}`)
+    return lines.join('\n')
+  }
+
+  const total = grandTotal ?? rows.reduce((sum, row) => sum + row.value, 0)
+  const maxValue = rows.reduce((max, row) => Math.max(max, row.value), 0)
+
+  for (const row of rows) {
+    const label = truncateLabel(row.label, labelWidth)
+    const bar = renderBar(row.value, maxValue, barWidth)
+    const pct = total > 0 ? ((row.value / total) * 100).toFixed(1) : '0.0'
+    const detail = row.detail ? ` ${colors.dim(singleLine(row.detail))}` : ''
+
+    lines.push(
+      `  ${padRight(label, labelWidth)} ${barColor(padRight(bar, barWidth))} ${padRight(formatValue(row.value), 8)} ${colors.dim(padRight(`${pct}%`, 7))}${detail}`,
+    )
+  }
+
+  if (moreCount > 0) {
+    lines.push(colors.dim(`  ... and ${moreCount} more`))
+  }
+
+  return lines.join('\n')
+}
+
+/** Auto-size label width from displayed data, clamped between min and max. */
+function autoLabelWidth(labels: string[], min: number, max: number): number {
+  const longest = labels.reduce((m, l) => Math.max(m, singleLine(l).length), 0)
+  return Math.min(max, Math.max(min, longest + 2))
+}
+
+// ---------------------------------------------------------------------------
+// Public render
 // ---------------------------------------------------------------------------
 
 export function renderAnalysis(result: AnalysisResult, { top = 15, showSteps = false }: { top?: number; showSteps?: boolean } = {}) {
@@ -66,13 +148,15 @@ export function renderAnalysis(result: AnalysisResult, { top = 15, showSteps = f
   return lines.join('\n')
 }
 
+// ---------------------------------------------------------------------------
+// Section renderers (all delegate to renderHistogram)
+// ---------------------------------------------------------------------------
+
 function renderOverview(result: AnalysisResult): string {
   const lines: string[] = []
   lines.push(heading('Session Overview'))
 
   const ctx = result.contextBreakdown
-  // OpenCode reports `input` as non-cached tokens only.
-  // Total prompt = input + cache.read + cache.write.
   const totalPromptTokens = ctx.totalInputTokens + ctx.totalCacheRead + ctx.totalCacheWrite
 
   const rows: [string, string][] = [
@@ -106,9 +190,6 @@ function renderOverview(result: AnalysisResult): string {
 }
 
 function renderContextBreakdown(ctx: ContextBreakdown): string {
-  const lines: string[] = []
-  lines.push(heading('Context Breakdown (by character size)'))
-
   const entries = [
     { label: 'System message', value: ctx.systemMessageChars },
     { label: 'Tool outputs', value: ctx.toolOutputChars },
@@ -119,89 +200,66 @@ function renderContextBreakdown(ctx: ContextBreakdown): string {
   ].sort((a, b) => b.value - a.value)
 
   const totalChars = entries.reduce((s, e) => s + e.value, 0)
-  const maxValue = entries[0]?.value || 1
 
-  for (const entry of entries) {
-    const pct = totalChars > 0 ? ((entry.value / totalChars) * 100).toFixed(1) : '0.0'
-    const bar = renderBar(entry.value, maxValue)
-    lines.push(
-      `  ${padRight(entry.label, 18)} ${colors.green(padRight(bar, BAR_WIDTH + 1))} ${padRight(formatNumber(entry.value), 8)} ${colors.dim(`${pct}%`)}`,
-    )
-  }
+  const result = renderHistogram({
+    title: 'Context Breakdown (by character size)',
+    rows: entries,
+    barColor: colors.green,
+    formatValue: formatNumber,
+    labelWidth: 18,
+    barWidth: 35,
+  })
 
-  lines.push(
-    `  ${colors.dim(padRight('Total', 18))} ${' '.repeat(BAR_WIDTH + 1)} ${padRight(formatNumber(totalChars), 8)} ${colors.dim('~' + formatNumber(Math.round(totalChars / 4)) + ' tokens')}`,
-  )
-
-  return lines.join('\n')
-}
-
-function groupedLabelWidth(groups: ToolGroup[], top: number): number {
-  const displayed = groups.slice(0, top)
-  const longest = Math.max(...displayed.map((g) => g.label.length))
-  return Math.min(longest + 2, 30)
+  // Append total line
+  const totalLine = `  ${colors.dim(padRight('Total', 18))} ${' '.repeat(35)} ${padRight(formatNumber(totalChars), 8)} ${colors.dim('~' + formatNumber(Math.round(totalChars / 4)) + ' tokens')}`
+  return result + '\n' + totalLine
 }
 
 function renderToolContextHistogram(groups: ToolGroup[], top: number): string {
-  const lines: string[] = []
-  lines.push(heading('Tool Context Usage (output + input chars)'))
-
   const displayed = groups.slice(0, top)
-  if (displayed.length === 0) {
-    lines.push('  No tool calls found')
-    return lines.join('\n')
-  }
-
-  const labelW = groupedLabelWidth(groups, top)
   const grandTotal = groups.reduce((s, g) => s + g.totalOutputChars + g.totalInputChars, 0)
-  const maxValue = Math.max(...displayed.map((g) => g.totalOutputChars + g.totalInputChars))
+  const labelW = autoLabelWidth(displayed.map((g) => g.label), 18, 30)
 
-  for (const group of displayed) {
-    const total = group.totalOutputChars + group.totalInputChars
-    const bar = renderBar(total, maxValue)
-    const pct = grandTotal > 0 ? ((total / grandTotal) * 100).toFixed(1) : '0.0'
-    const detail = `(${group.count} calls)`
-    lines.push(
-      `  ${padRight(group.label, labelW)} ${colors.yellow(padRight(bar, BAR_WIDTH + 1))} ${padRight(formatNumber(total), 8)} ${colors.dim(padRight(`${pct}%`, 7))} ${colors.dim(detail)}`,
-    )
-  }
-
-  if (groups.length > top) {
-    lines.push(colors.dim(`  ... and ${groups.length - top} more`))
-  }
-
-  return lines.join('\n')
+  return renderHistogram({
+    title: 'Tool Context Usage (output + input chars)',
+    rows: displayed.map((g) => ({
+      label: g.label,
+      value: g.totalOutputChars + g.totalInputChars,
+      detail: `(${g.count} calls)`,
+    })),
+    grandTotal,
+    barColor: colors.yellow,
+    formatValue: formatNumber,
+    labelWidth: labelW,
+    barWidth: 35,
+    emptyMessage: 'No tool calls found',
+    moreCount: Math.max(0, groups.length - top),
+  })
 }
 
 function renderToolDurationHistogram(groups: ToolGroup[], top: number): string {
-  const lines: string[] = []
-  lines.push(heading('Tool Calls by Duration'))
-
   const displayed = groups.slice(0, top)
-  if (displayed.length === 0) {
-    lines.push('  No tool calls with timing data')
-    return lines.join('\n')
-  }
-
-  const labelW = groupedLabelWidth(groups, top)
   const grandTotal = groups.reduce((s, g) => s + g.totalDurationMs, 0)
-  const maxValue = Math.max(...displayed.map((g) => g.totalDurationMs))
+  const labelW = autoLabelWidth(displayed.map((g) => g.label), 18, 30)
 
-  for (const group of displayed) {
-    const bar = renderBar(group.totalDurationMs, maxValue)
-    const pct = grandTotal > 0 ? ((group.totalDurationMs / grandTotal) * 100).toFixed(1) : '0.0'
-    const avg = group.count > 0 ? group.totalDurationMs / group.count : 0
-    const detail = `(${group.count} calls, avg ${formatDuration(avg)}, max ${formatDuration(group.maxDurationMs)})`
-    lines.push(
-      `  ${padRight(group.label, labelW)} ${colors.magenta(padRight(bar, BAR_WIDTH + 1))} ${padRight(formatDuration(group.totalDurationMs), 8)} ${colors.dim(padRight(`${pct}%`, 7))} ${colors.dim(detail)}`,
-    )
-  }
-
-  if (groups.length > top) {
-    lines.push(colors.dim(`  ... and ${groups.length - top} more`))
-  }
-
-  return lines.join('\n')
+  return renderHistogram({
+    title: 'Tool Calls by Duration',
+    rows: displayed.map((g) => {
+      const avg = g.count > 0 ? g.totalDurationMs / g.count : 0
+      return {
+        label: g.label,
+        value: g.totalDurationMs,
+        detail: `(${g.count} calls, avg ${formatDuration(avg)}, max ${formatDuration(g.maxDurationMs)})`,
+      }
+    }),
+    grandTotal,
+    barColor: colors.magenta,
+    formatValue: formatDuration,
+    labelWidth: labelW,
+    barWidth: 35,
+    emptyMessage: 'No tool calls with timing data',
+    moreCount: Math.max(0, groups.length - top),
+  })
 }
 
 function renderIndividualCallsHistogram(
@@ -210,36 +268,27 @@ function renderIndividualCallsHistogram(
   mode: 'chars' | 'duration',
   colorFn: (s: string) => string,
 ): string {
-  const lines: string[] = []
-  lines.push(heading(title))
-
-  if (calls.length === 0) {
-    lines.push('  No tool calls found')
-    return lines.join('\n')
-  }
-
   const termWidth = process.stdout.columns || 120
-  const INDIVIDUAL_LABEL_WIDTH = Math.min(55, Math.floor(termWidth * 0.45))
-  const INDIVIDUAL_BAR_WIDTH = Math.max(10, termWidth - 2 - INDIVIDUAL_LABEL_WIDTH - 1 - 8 - 1 - 6)
-  const getValue = (c: IndividualToolCall) => mode === 'chars' ? c.totalChars : c.durationMs
-  const formatValue = (v: number) => mode === 'chars' ? formatNumber(v) : formatDuration(v)
-  const maxValue = Math.max(...calls.map(getValue))
-  const grandTotal = calls.reduce((s, c) => s + getValue(c), 0)
+  const labelW = Math.min(55, Math.floor(termWidth * 0.45))
+  const barW = Math.min(20, Math.max(10, termWidth - 2 - labelW - 1 - 8 - 1 - 7))
 
-  for (const call of calls) {
-    const value = getValue(call)
-    const bar = renderBar(value, maxValue, INDIVIDUAL_BAR_WIDTH)
-    const pct = grandTotal > 0 ? ((value / grandTotal) * 100).toFixed(1) : '0.0'
-    const label = call.label.length > INDIVIDUAL_LABEL_WIDTH
-      ? call.label.slice(0, INDIVIDUAL_LABEL_WIDTH - 1) + '…'
-      : call.label
-    lines.push(
-      `  ${padRight(label, INDIVIDUAL_LABEL_WIDTH)} ${colorFn(padRight(bar, INDIVIDUAL_BAR_WIDTH + 1))} ${padRight(formatValue(value), 8)} ${colors.dim(`${pct}%`)}`,
-    )
-  }
-
-  return lines.join('\n')
+  return renderHistogram({
+    title,
+    rows: calls.map((c) => ({
+      label: c.label,
+      value: mode === 'chars' ? c.totalChars : c.durationMs,
+    })),
+    barColor: colorFn,
+    formatValue: mode === 'chars' ? formatNumber : formatDuration,
+    labelWidth: labelW,
+    barWidth: barW,
+    emptyMessage: 'No tool calls found',
+  })
 }
+
+// ---------------------------------------------------------------------------
+// Steps table (not a histogram, kept separate)
+// ---------------------------------------------------------------------------
 
 function renderStepsTable(steps: StepInfo[]): string {
   const lines: string[] = []

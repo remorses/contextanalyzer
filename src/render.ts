@@ -75,6 +75,8 @@ type HistogramConfig = {
   formatValue: (value: number) => string
   labelWidth: number
   barWidth: number
+  /** Column header names: [label, value]. Percentage header is always "%". */
+  headers?: [string, string]
   emptyMessage?: string
   moreCount?: number
 }
@@ -87,6 +89,7 @@ function renderHistogram({
   formatValue,
   labelWidth,
   barWidth,
+  headers,
   emptyMessage = 'No data found',
   moreCount = 0,
 }: HistogramConfig): string {
@@ -96,6 +99,13 @@ function renderHistogram({
   if (rows.length === 0) {
     lines.push(`  ${emptyMessage}`)
     return lines.join('\n')
+  }
+
+  if (headers) {
+    const [labelHeader, valueHeader] = headers
+    lines.push(
+      `  ${colors.dim(padRight(labelHeader, labelWidth))} ${colors.dim(padRight('', barWidth))} ${colors.dim(padRight(valueHeader, 8))} ${colors.dim(padRight('%', 7))}`,
+    )
   }
 
   const total = grandTotal ?? rows.reduce((sum, row) => sum + row.value, 0)
@@ -137,7 +147,7 @@ export function renderAnalysis(result: AnalysisResult, { top = 15, showSteps = f
   lines.push(renderToolContextHistogram(result.toolsByContextSize, top))
   lines.push(renderToolDurationHistogram(result.toolsByDuration, top))
   if (result.individualCallsBySize.length > 0) {
-    lines.push(renderIndividualCallsHistogram(result.individualCallsBySize, 'Biggest Individual Tool Calls (by context size)', 'chars', colors.yellow))
+    lines.push(renderIndividualCallsHistogram(result.individualCallsBySize, 'Biggest Individual Tool Calls (by context size)', 'tokens', colors.yellow))
   }
   if (result.individualCallsByDuration.length > 0) {
     lines.push(renderIndividualCallsHistogram(result.individualCallsByDuration, 'Slowest Individual Tool Calls (by duration)', 'duration', colors.magenta))
@@ -191,41 +201,45 @@ function renderOverview(result: AnalysisResult): string {
 }
 
 function renderContextBreakdown(ctx: ContextBreakdown): string {
+  const charsToTokens = (chars: number) => Math.round(chars / 4)
+
   const entries = [
-    { label: 'System message', value: ctx.systemMessageChars },
-    { label: 'Tool outputs', value: ctx.toolOutputChars },
-    { label: 'Tool inputs', value: ctx.toolInputChars },
-    { label: 'Assistant text', value: ctx.assistantTextChars },
-    { label: 'User text', value: ctx.userTextChars },
-    { label: 'Reasoning', value: ctx.reasoningChars },
+    { label: 'System message', value: charsToTokens(ctx.systemMessageChars) },
+    { label: 'Tool outputs', value: charsToTokens(ctx.toolOutputChars) },
+    { label: 'Tool inputs', value: charsToTokens(ctx.toolInputChars) },
+    { label: 'Assistant text', value: charsToTokens(ctx.assistantTextChars) },
+    { label: 'User text', value: charsToTokens(ctx.userTextChars) },
+    { label: 'Reasoning', value: charsToTokens(ctx.reasoningChars) },
   ].sort((a, b) => b.value - a.value)
 
-  const totalChars = entries.reduce((s, e) => s + e.value, 0)
+  const totalTokens = entries.reduce((s, e) => s + e.value, 0)
 
   const result = renderHistogram({
-    title: 'Context Breakdown (by character size)',
+    title: 'Context Breakdown (by estimated tokens)',
     rows: entries,
     barColor: colors.green,
     formatValue: formatNumber,
     labelWidth: 18,
     barWidth: 35,
+    headers: ['Category', 'Tokens'],
   })
 
   // Append total line
-  const totalLine = `  ${colors.dim(padRight('Total', 18))} ${' '.repeat(35)} ${padRight(formatNumber(totalChars), 8)} ${colors.dim('~' + formatNumber(Math.round(totalChars / 4)) + ' tokens')}`
+  const totalLine = `  ${colors.dim(padRight('Total', 18))} ${' '.repeat(35)} ${padRight(formatNumber(totalTokens), 8)}`
   return result + '\n' + totalLine
 }
 
 function renderToolContextHistogram(groups: ToolGroup[], top: number): string {
+  const charsToTokens = (chars: number) => Math.round(chars / 4)
   const displayed = groups.slice(0, top)
-  const grandTotal = groups.reduce((s, g) => s + g.totalOutputChars + g.totalInputChars, 0)
+  const grandTotal = charsToTokens(groups.reduce((s, g) => s + g.totalOutputChars + g.totalInputChars, 0))
   const labelW = autoLabelWidth(displayed.map((g) => g.label), 18, 30)
 
   return renderHistogram({
-    title: 'Tool Context Usage (output + input chars)',
+    title: 'Tool Context Usage (output + input tokens)',
     rows: displayed.map((g) => ({
       label: g.label,
-      value: g.totalOutputChars + g.totalInputChars,
+      value: charsToTokens(g.totalOutputChars + g.totalInputChars),
       detail: `(${g.count} calls)`,
     })),
     grandTotal,
@@ -233,6 +247,7 @@ function renderToolContextHistogram(groups: ToolGroup[], top: number): string {
     formatValue: formatNumber,
     labelWidth: labelW,
     barWidth: 35,
+    headers: ['Tool', 'Tokens'],
     emptyMessage: 'No tool calls found',
     moreCount: Math.max(0, groups.length - top),
   })
@@ -258,6 +273,7 @@ function renderToolDurationHistogram(groups: ToolGroup[], top: number): string {
     formatValue: formatDuration,
     labelWidth: labelW,
     barWidth: 35,
+    headers: ['Tool', 'Duration'],
     emptyMessage: 'No tool calls with timing data',
     moreCount: Math.max(0, groups.length - top),
   })
@@ -266,9 +282,10 @@ function renderToolDurationHistogram(groups: ToolGroup[], top: number): string {
 function renderIndividualCallsHistogram(
   calls: IndividualToolCall[],
   title: string,
-  mode: 'chars' | 'duration',
+  mode: 'tokens' | 'duration',
   colorFn: (s: string) => string,
 ): string {
+  const charsToTokens = (chars: number) => Math.round(chars / 4)
   const termWidth = process.stdout.columns || 120
   const labelW = Math.min(70, Math.floor(termWidth * 0.55))
   const barW = Math.min(20, Math.max(8, termWidth - 2 - labelW - 1 - 8 - 1 - 7))
@@ -277,12 +294,13 @@ function renderIndividualCallsHistogram(
     title,
     rows: calls.map((c) => ({
       label: c.label,
-      value: mode === 'chars' ? c.totalChars : c.durationMs,
+      value: mode === 'tokens' ? charsToTokens(c.totalChars) : c.durationMs,
     })),
     barColor: colorFn,
-    formatValue: mode === 'chars' ? formatNumber : formatDuration,
+    formatValue: mode === 'tokens' ? formatNumber : formatDuration,
     labelWidth: labelW,
     barWidth: barW,
+    headers: ['Call', mode === 'tokens' ? 'Tokens' : 'Duration'],
     emptyMessage: 'No tool calls found',
   })
 }

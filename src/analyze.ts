@@ -1,7 +1,8 @@
-// Core analysis engine. Takes message+parts arrays from the OpenCode SDK
-// and produces structured analysis results for rendering.
+// Core analysis engine. Takes NormalizedMessage[] from any platform
+// (OpenCode, Claude Code, Codex) and produces structured analysis
+// results for rendering.
 
-import type { MessageWithParts, AssistantMessage, UserMessage } from './opencode-client.ts'
+import type { NormalizedMessage, NormalizedPart } from './platform.ts'
 import { extractBashCommand } from './bash-command.ts'
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,11 @@ export type AnalysisResult = {
   steps: StepInfo[]
   messageCount: { user: number; assistant: number }
   totalDurationMs: number
+  /** True when per-message token data was available from the platform */
+  hasTokenData: boolean
+  /** True when tool call duration data reflects real execution time
+   *  (not replay timing). ACP agents set duration to 0. */
+  hasDurationData: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +88,7 @@ export function analyzeSession({
   messages,
 }: {
   sessionId: string
-  messages: MessageWithParts[]
+  messages: NormalizedMessage[]
 }): AnalysisResult {
   const contextBreakdown: ContextBreakdown = {
     systemMessageChars: 0,
@@ -107,90 +113,77 @@ export function analyzeSession({
   let modelId = ''
   let earliestTime = Infinity
   let latestTime = 0
-
-  // Track system message seen to avoid double counting across messages
   let systemMessageSeen = false
+  let hasTokenData = false
+  let hasDurationData = false
 
   for (const msg of messages) {
-    const { info, parts } = msg
+    if (msg.timestamp < earliestTime) earliestTime = msg.timestamp
+    const endTime = msg.completedAt ?? msg.timestamp
+    if (endTime > latestTime) latestTime = endTime
 
-    if (info.role === 'user') {
+    if (msg.role === 'user') {
       userCount++
-      const userInfo = info as UserMessage
 
-      // System message (only count once; it's roughly the same across turns)
-      if (!systemMessageSeen && userInfo.system) {
-        contextBreakdown.systemMessageChars = userInfo.system.length
+      // System message (only count once)
+      if (!systemMessageSeen && msg.system) {
+        contextBreakdown.systemMessageChars = msg.system.length
         systemMessageSeen = true
       }
 
-      if (userInfo.time.created < earliestTime) earliestTime = userInfo.time.created
-      if (userInfo.time.created > latestTime) latestTime = userInfo.time.created
-
       // User text parts
-      for (const part of parts) {
-        if (part.type === 'text' && !('synthetic' in part && part.synthetic)) {
-          const textPart = part as { type: 'text'; text: string }
-          contextBreakdown.userTextChars += textPart.text.length
+      for (const part of msg.content) {
+        if (part.type === 'text') {
+          contextBreakdown.userTextChars += part.text.length
         }
       }
     }
 
-    if (info.role === 'assistant') {
+    if (msg.role === 'assistant') {
       assistantCount++
-      const assistantInfo = info as AssistantMessage
-      if (!modelId && assistantInfo.modelID) modelId = assistantInfo.modelID
+      if (!modelId && msg.model) modelId = msg.model
 
-      contextBreakdown.totalInputTokens += assistantInfo.tokens.input
-      contextBreakdown.totalOutputTokens += assistantInfo.tokens.output
-      contextBreakdown.totalReasoningTokens += assistantInfo.tokens.reasoning
-      contextBreakdown.totalCacheRead += assistantInfo.tokens.cache.read
-      contextBreakdown.totalCacheWrite += assistantInfo.tokens.cache.write
-      contextBreakdown.totalCost += assistantInfo.cost
-
-      if (assistantInfo.time.created < earliestTime) earliestTime = assistantInfo.time.created
-      if (assistantInfo.time.completed && assistantInfo.time.completed > latestTime) {
-        latestTime = assistantInfo.time.completed
+      // Accumulate per-message token data if available
+      if (msg.tokens) {
+        hasTokenData = true
+        contextBreakdown.totalInputTokens += msg.tokens.input
+        contextBreakdown.totalOutputTokens += msg.tokens.output
+        contextBreakdown.totalReasoningTokens += msg.tokens.reasoning
+        contextBreakdown.totalCacheRead += msg.tokens.cacheRead
+        contextBreakdown.totalCacheWrite += msg.tokens.cacheWrite
+      }
+      if (msg.cost !== undefined) {
+        contextBreakdown.totalCost += msg.cost
       }
 
-      for (const part of parts) {
+      for (const part of msg.content) {
         if (part.type === 'text') {
-          const textPart = part as { type: 'text'; text: string }
-          contextBreakdown.assistantTextChars += textPart.text.length
+          contextBreakdown.assistantTextChars += part.text.length
         }
 
         if (part.type === 'reasoning') {
-          const reasoningPart = part as { type: 'reasoning'; text: string }
-          contextBreakdown.reasoningChars += reasoningPart.text.length
+          contextBreakdown.reasoningChars += part.text.length
         }
 
-        if (part.type === 'tool') {
-          processToolPart(part, toolGroupMap, individualCalls, contextBreakdown)
+        if (part.type === 'tool-call') {
+          if (part.durationMs > 0) hasDurationData = true
+          processToolCall(part, toolGroupMap, individualCalls, contextBreakdown)
         }
 
         if (part.type === 'step-finish') {
-          const sf = part as {
-            type: 'step-finish'
-            cost: number
-            tokens: {
-              input: number
-              output: number
-              reasoning: number
-              cache: { read: number; write: number }
-            }
-          }
           // OpenCode reports `input` as only non-cached tokens.
           // Total prompt tokens = input + cache.read + cache.write.
-          const totalPrompt = sf.tokens.input + sf.tokens.cache.read + sf.tokens.cache.write
-          const cacheHitRate = totalPrompt > 0 ? sf.tokens.cache.read / totalPrompt : 0
+          const totalPrompt =
+            part.tokens.input + part.tokens.cacheRead + part.tokens.cacheWrite
+          const cacheHitRate = totalPrompt > 0 ? part.tokens.cacheRead / totalPrompt : 0
           steps.push({
             index: steps.length + 1,
             inputTokens: totalPrompt,
-            outputTokens: sf.tokens.output,
-            reasoningTokens: sf.tokens.reasoning,
-            cacheRead: sf.tokens.cache.read,
-            cacheWrite: sf.tokens.cache.write,
-            cost: sf.cost,
+            outputTokens: part.tokens.output,
+            reasoningTokens: part.tokens.reasoning,
+            cacheRead: part.tokens.cacheRead,
+            cacheWrite: part.tokens.cacheWrite,
+            cost: part.cost,
             cacheHitRate,
           })
         }
@@ -225,81 +218,64 @@ export function analyzeSession({
     steps,
     messageCount: { user: userCount, assistant: assistantCount },
     totalDurationMs,
+    hasTokenData,
+    hasDurationData,
   }
 }
 
-function processToolPart(
-  part: { type: 'tool'; tool: string; state: unknown; [key: string]: unknown },
+function processToolCall(
+  part: Extract<NormalizedPart, { type: 'tool-call' }>,
   toolGroupMap: Map<string, ToolGroup>,
   individualCalls: IndividualToolCall[],
   contextBreakdown: ContextBreakdown,
 ) {
-  const toolName = (part as { tool: string }).tool
-  const state = part.state as {
-    status: string
-    input?: Record<string, unknown>
-    output?: string
-    time?: { start: number; end: number }
-  }
-
-  if (state.status !== 'completed' && state.status !== 'error') return
-
-  const inputStr = state.input ? JSON.stringify(state.input) : ''
-  // Error parts store their text in `error`, not `output`
-  const outputStr = state.status === 'error'
-    ? (state as { error?: string }).error || ''
-    : state.output || ''
-  const durationMs =
-    state.time && state.time.end && state.time.start ? state.time.end - state.time.start : 0
+  const inputStr = JSON.stringify(part.input)
+  const outputStr = part.output
 
   contextBreakdown.toolOutputChars += outputStr.length
   contextBreakdown.toolInputChars += inputStr.length
 
   // Track individual call with a descriptive label
   const totalChars = inputStr.length + outputStr.length
-  const individualLabel = buildIndividualLabel(toolName, state.input)
-  individualCalls.push({ label: individualLabel, toolName, totalChars, durationMs })
+  const individualLabel = buildIndividualLabel(part.name, part.input)
+  individualCalls.push({
+    label: individualLabel,
+    toolName: part.name,
+    totalChars,
+    durationMs: part.durationMs,
+  })
 
-  // Determine group key: for bash, sub-categorize by first command
-  let groupKey = toolName
-  let bashCommand: string | undefined
-  if (toolName === 'bash' || toolName === 'Bash') {
-    const command = (state.input as Record<string, unknown>)?.command
-    if (typeof command === 'string') {
-      bashCommand = extractBashCommand(command)
-      groupKey = `bash (${bashCommand})`
-    }
-  }
+  // Group key: tool name (bash commands are already sub-categorized by the
+  // platform normalization layer, e.g. "bash (git)")
+  const groupKey = part.name
 
   const existing = toolGroupMap.get(groupKey)
   if (existing) {
     existing.totalOutputChars += outputStr.length
     existing.totalInputChars += inputStr.length
-    existing.totalDurationMs += durationMs
+    existing.totalDurationMs += part.durationMs
     existing.count++
-    if (durationMs > existing.maxDurationMs) existing.maxDurationMs = durationMs
+    if (part.durationMs > existing.maxDurationMs) existing.maxDurationMs = part.durationMs
   } else {
     toolGroupMap.set(groupKey, {
       label: groupKey,
-      toolName,
-      bashCommand,
+      toolName: part.name,
       totalOutputChars: outputStr.length,
       totalInputChars: inputStr.length,
-      totalDurationMs: durationMs,
+      totalDurationMs: part.durationMs,
       count: 1,
-      maxDurationMs: durationMs,
+      maxDurationMs: part.durationMs,
     })
   }
 }
 
 // Build a descriptive label for an individual tool call. No truncation here;
 // the renderer handles that based on available terminal width.
-function buildIndividualLabel(toolName: string, input?: Record<string, unknown>): string {
-  if (!input) return toolName
-
+function buildIndividualLabel(toolName: string, input: Record<string, unknown>): string {
   const lower = toolName.toLowerCase()
 
-  if (lower === 'bash') {
+  // Handle bash sub-categories like "bash (git)"
+  if (lower.startsWith('bash')) {
     const cmd = typeof input.command === 'string' ? input.command.trim() : ''
     return `bash: ${cmd}`
   }
@@ -347,6 +323,12 @@ function buildIndividualLabel(toolName: string, input?: Record<string, unknown>)
   if (lower === 'skill') {
     const name = typeof input.name === 'string' ? input.name : ''
     return `skill: ${name}`
+  }
+
+  // Codex exec_command
+  if (lower === 'exec_command') {
+    const cmd = typeof input.cmd === 'string' ? input.cmd.trim() : ''
+    return `exec: ${cmd}`
   }
 
   // Fallback: tool name + first string value from input

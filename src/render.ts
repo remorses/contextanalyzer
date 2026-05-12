@@ -143,13 +143,25 @@ export function renderAnalysis(result: AnalysisResult, { top = 15, showSteps = f
   const lines: string[] = []
 
   lines.push(renderOverview(result))
-  lines.push(renderContextBreakdown(result.contextBreakdown))
+
+  if (result.hasTokenData) {
+    lines.push(renderContextBreakdown(result.contextBreakdown))
+  } else {
+    lines.push(heading('Context Breakdown'))
+    lines.push(`  ${colors.dim('Token data not available for this agent (ACP replay does not include per-turn usage).')}`)
+    lines.push(`  ${colors.dim('Tool context sizes below are estimated from input/output character counts.')}`)
+  }
+
   lines.push(renderToolContextHistogram(result.toolsByContextSize, top))
-  lines.push(renderToolDurationHistogram(result.toolsByDuration, top))
+
+  if (result.hasDurationData) {
+    lines.push(renderToolDurationHistogram(result.toolsByDuration, top))
+  }
+
   if (result.individualCallsBySize.length > 0) {
     lines.push(renderIndividualCallsHistogram(result.individualCallsBySize, 'Biggest Individual Tool Calls (by context size)', 'tokens', colors.yellow))
   }
-  if (result.individualCallsByDuration.length > 0) {
+  if (result.hasDurationData && result.individualCallsByDuration.length > 0) {
     lines.push(renderIndividualCallsHistogram(result.individualCallsByDuration, 'Slowest Individual Tool Calls (by duration)', 'duration', colors.magenta))
   }
   if (showSteps && result.steps.length > 0) {
@@ -168,30 +180,38 @@ function renderOverview(result: AnalysisResult): string {
   lines.push(heading('Session Overview'))
 
   const ctx = result.contextBreakdown
-  const totalPromptTokens = ctx.totalInputTokens + ctx.totalCacheRead + ctx.totalCacheWrite
 
   const rows: [string, string][] = [
     ['Session', result.sessionId],
     ['Model', result.modelId || 'unknown'],
     ['Messages', `${result.messageCount.user} user, ${result.messageCount.assistant} assistant`],
     ['Duration', formatDuration(result.totalDurationMs)],
-    ['Steps', String(result.steps.length)],
   ]
+
+  if (result.steps.length > 0) {
+    rows.push(['Steps', String(result.steps.length)])
+  }
 
   if (ctx.totalCost > 0) {
     rows.push(['Total Cost', formatCost(ctx.totalCost)])
   }
 
-  rows.push(
-    ['Prompt Tokens', `${formatNumber(totalPromptTokens)} (${formatNumber(ctx.totalCacheRead)} cached, ${formatNumber(ctx.totalInputTokens)} uncached)`],
-    ['Output Tokens', formatNumber(ctx.totalOutputTokens)],
-  )
+  // Only show token rows when we have actual token data from the platform
+  if (result.hasTokenData) {
+    const totalPromptTokens = ctx.totalInputTokens + ctx.totalCacheRead + ctx.totalCacheWrite
+    const grandTotalTokens = totalPromptTokens + ctx.totalOutputTokens
+    rows.push(
+      ['Total Tokens', colors.bold(formatNumber(grandTotalTokens))],
+      ['Prompt Tokens', `${formatNumber(totalPromptTokens)} (${formatNumber(ctx.totalCacheRead)} cached, ${formatNumber(ctx.totalInputTokens)} uncached)`],
+      ['Output Tokens', formatNumber(ctx.totalOutputTokens)],
+    )
 
-  if (ctx.totalReasoningTokens > 0) {
-    rows.push(['Reasoning Tokens', formatNumber(ctx.totalReasoningTokens)])
+    if (ctx.totalReasoningTokens > 0) {
+      rows.push(['Reasoning Tokens', formatNumber(ctx.totalReasoningTokens)])
+    }
+
+    rows.push(['Cache Write', formatNumber(ctx.totalCacheWrite)])
   }
-
-  rows.push(['Cache Write', formatNumber(ctx.totalCacheWrite)])
 
   for (const [label, value] of rows) {
     lines.push(`  ${colors.dim(padRight(label, 20))} ${value}`)

@@ -93,7 +93,7 @@ cli
 
     // --------------- Agent selection ---------------
 
-    let agentId = options.agent as PlatformId | undefined
+    let agentId = options.agent
 
     if (!agentId) {
       if (isAgent || !process.stdin.isTTY) {
@@ -131,7 +131,7 @@ cli
 
       // --------------- Session selection ---------------
 
-      let selectedSessionId = sessionId as string | undefined
+      let selectedSessionId = sessionId
       if (!selectedSessionId) {
         spinner.start('Fetching sessions...')
         const sessions = await listSessions(conn, { cwd })

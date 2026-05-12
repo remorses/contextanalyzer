@@ -30,6 +30,9 @@ importers:
         specifier: ^4.3.6
         version: 4.4.3
     devDependencies:
+      '@opencode-ai/sdk':
+        specifier: ^1.14.48
+        version: 1.14.48
       '@types/node':
         specifier: ^25.6.2
         version: 25.6.2
@@ -322,6 +325,9 @@ packages:
 
   '@nodable/entities@2.1.0':
     resolution: {integrity: sha512-nyT7T3nbMyBI/lvr6L5TyWbFJAI9FTgVRakNoBqCD+PmID8DzFrrNdLLtHMwMszOtqZa8PAOV24ZqDnQrhQINA==}
+
+  '@opencode-ai/sdk@1.14.48':
+    resolution: {integrity: sha512-wKM86jCzV/ZApyWrdm3uP8XdWcS0LMbu3FV+OWz1ChiGGg1wiIWNGMJs5CY8/QX2/rUuZrd1Q1DqvdamZ0zLeg==}
 
   '@tokenizer/inflate@0.4.1':
     resolution: {integrity: sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA==}
@@ -1228,6 +1234,10 @@ snapshots:
     optional: true
 
   '@nodable/entities@2.1.0': {}
+
+  '@opencode-ai/sdk@1.14.48':
+    dependencies:
+      cross-spawn: 7.0.6
 
   '@tokenizer/inflate@0.4.1':
     dependencies:

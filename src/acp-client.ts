@@ -126,8 +126,7 @@ class NotificationCollector {
   private handleToolCall(update: UpdateVariant<'tool_call'>) {
     this.startChunk('assistant', null)
 
-    const meta = update._meta as { claudeCode?: { toolName?: string } } | null | undefined
-    const toolName = meta?.claudeCode?.toolName || update.title || 'unknown'
+    const toolName = extractClaudeToolName(update._meta) || update.title || 'unknown'
 
     this.pendingTools.set(update.toolCallId, {
       name: toolName,
@@ -145,8 +144,8 @@ class NotificationCollector {
     if (update.rawInput !== undefined) pending.input = toRecord(update.rawInput)
     if (update.kind) pending.kind = update.kind
 
-    const meta = update._meta as { claudeCode?: { toolName?: string } } | null | undefined
-    if (meta?.claudeCode?.toolName) pending.name = meta.claudeCode.toolName
+    const claudeName = extractClaudeToolName(update._meta)
+    if (claudeName) pending.name = claudeName
     else if (update.title) pending.name = update.title
 
     const isTerminal = update.status === 'completed' || update.status === 'failed'
@@ -211,9 +210,24 @@ class NotificationCollector {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Claude Code puts the real tool name in _meta.claudeCode.toolName.
+ *  The _meta field is Record<string, unknown> per ACP spec, so we
+ *  navigate it with optional chaining. */
+function extractClaudeToolName(meta: Record<string, unknown> | null | undefined): string | undefined {
+  const cc = meta?.claudeCode
+  if (cc && typeof cc === 'object' && 'toolName' in cc) {
+    const name = (cc as { toolName?: string }).toolName
+    return typeof name === 'string' ? name : undefined
+  }
+  return undefined
+}
+
+/** Extract a record from ACP's rawInput/rawOutput fields, which are typed
+ *  as `unknown` in the SDK because the protocol doesn't constrain them. */
 function toRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return value as Record<string, unknown>
+    // ACP rawInput is always a JSON object when present
+    return value as Record<string, unknown> // lintcn: unavoidable, ACP types it as unknown
   }
   return {}
 }
@@ -232,8 +246,10 @@ function extractToolOutput(update: ToolCallUpdate): string {
       )
       .filter((c) => c.content.type === 'text')
       .map((c) => {
-        const block = c.content as { type: 'text'; text: string }
-        return block.text
+        // ContentBlock is a discriminated union on `type`; after filtering
+        // for type==='text' the block has a `text` field
+        if (c.content.type === 'text') return c.content.text
+        return ''
       })
       .join('\n')
   }
@@ -246,7 +262,7 @@ function extractToolOutput(update: ToolCallUpdate): string {
 // ---------------------------------------------------------------------------
 
 function createMinimalClient(active: ActiveCollector): (agent: Agent) => Client {
-  return (_agent: Agent) => ({
+  return (_agent) => ({
     async requestPermission(_params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
       return { outcome: { outcome: 'cancelled' } }
     },
@@ -297,7 +313,7 @@ export async function connectAcp({
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {},
     })
-    .catch((e: unknown) => new Error('ACP initialization failed', { cause: e }))
+    .catch((e) => new Error('ACP initialization failed', { cause: e }))
 
   if (initResult instanceof Error) {
     proc.kill()
@@ -319,7 +335,7 @@ export async function listSessions(
 ): Promise<Error | SessionInfo[]> {
   const result = await conn.connection
     .listSessions({ cwd })
-    .catch((e: unknown) => new Error('Failed to list sessions', { cause: e }))
+    .catch((e) => new Error('Failed to list sessions', { cause: e }))
 
   if (result instanceof Error) return result
 
@@ -346,13 +362,16 @@ export async function fetchMessages(
       cwd: cwd || process.cwd(),
       mcpServers: [],
     })
-    .catch((e: unknown) => new Error(`Failed to load session ${sessionId}`, { cause: e }))
+    .catch((e) => new Error(`Failed to load session ${sessionId}`, { cause: e }))
 
   if (loadResult instanceof Error) return loadResult
 
   return conn.active.collector.finalize()
 }
 
+// disconnect is intentionally a named export rather than inlining
+// conn.process.kill() at call sites — it reads better in finally blocks
+// and keeps the ACP API surface in one file.
 export function disconnect(conn: AcpConnection) {
   conn.process.kill()
 }

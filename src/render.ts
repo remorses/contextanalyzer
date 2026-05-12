@@ -151,11 +151,22 @@ function renderOverview(result: AnalysisResult): string {
   const lines: string[] = []
   lines.push(heading('Session Overview'))
 
+  const ctx = result.contextBreakdown
+  const charsToTokens = (chars: number) => Math.round(chars / 4)
+  const totalEstimatedTokens = charsToTokens(
+    ctx.systemMessageChars +
+    ctx.toolOutputChars +
+    ctx.toolInputChars +
+    ctx.assistantTextChars +
+    ctx.userTextChars,
+  )
+
   const rows: [string, string][] = [
     ['Session', result.sessionId],
     ['Model', result.modelId || 'unknown'],
     ['Messages', `${result.messageCount.user} user, ${result.messageCount.assistant} assistant`],
     ['Duration', formatDuration(result.totalDurationMs)],
+    ['Total Tokens', `~${colors.bold(formatNumber(totalEstimatedTokens))}`],
   ]
 
   for (const [label, value] of rows) {

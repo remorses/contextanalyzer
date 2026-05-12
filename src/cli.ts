@@ -7,6 +7,7 @@ import { goke, isAgent } from 'goke'
 import { z } from 'zod'
 import module from 'node:module'
 import fs from 'node:fs'
+import path from 'node:path'
 import * as clack from '@clack/prompts'
 import { PLATFORM_IDS, PLATFORM_LABELS, type PlatformId } from './platform.ts'
 import { connectAcp, listSessions, fetchMessages, disconnect, type SpawnConfig } from './acp-client.ts'
@@ -72,7 +73,7 @@ cli
   .option('--top [top]', z.number().default(15).describe('Max items in histograms'))
   .option('--json', 'Output raw analysis as JSON')
   .action(async (sessionId, options) => {
-    const cwd = options.cwd || process.cwd()
+    const cwd = path.resolve(options.cwd || process.cwd())
     const useStderr = options.json
 
     const log = {

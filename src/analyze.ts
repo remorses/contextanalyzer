@@ -1,4 +1,4 @@
-// Core analysis engine. Takes NormalizedMessage[] from any platform
+// Core analysis engine. Takes NormalizedMessage[] from any agent
 // (OpenCode, Claude Code, Codex) and produces structured analysis
 // results for rendering.
 
@@ -9,14 +9,6 @@ import { extractBashCommand } from './bash-command.ts'
 // Result types
 // ---------------------------------------------------------------------------
 
-export type HistogramEntry = {
-  label: string
-  value: number
-  count: number
-  /** optional sub-label like "(12 calls)" */
-  detail?: string
-}
-
 export type ContextBreakdown = {
   systemMessageChars: number
   toolOutputChars: number
@@ -24,41 +16,18 @@ export type ContextBreakdown = {
   assistantTextChars: number
   userTextChars: number
   reasoningChars: number
-  totalInputTokens: number
-  totalOutputTokens: number
-  totalReasoningTokens: number
-  totalCacheRead: number
-  totalCacheWrite: number
-  totalCost: number
 }
 
 export type ToolGroup = {
   label: string
-  toolName: string
-  bashCommand?: string
   totalOutputChars: number
   totalInputChars: number
-  totalDurationMs: number
   count: number
-  maxDurationMs: number
 }
 
 export type IndividualToolCall = {
   label: string
-  toolName: string
   totalChars: number
-  durationMs: number
-}
-
-export type StepInfo = {
-  index: number
-  inputTokens: number
-  outputTokens: number
-  reasoningTokens: number
-  cacheRead: number
-  cacheWrite: number
-  cost: number
-  cacheHitRate: number
 }
 
 export type AnalysisResult = {
@@ -66,17 +35,9 @@ export type AnalysisResult = {
   modelId: string
   contextBreakdown: ContextBreakdown
   toolsByContextSize: ToolGroup[]
-  toolsByDuration: ToolGroup[]
   individualCallsBySize: IndividualToolCall[]
-  individualCallsByDuration: IndividualToolCall[]
-  steps: StepInfo[]
   messageCount: { user: number; assistant: number }
   totalDurationMs: number
-  /** True when per-message token data was available from the platform */
-  hasTokenData: boolean
-  /** True when tool call duration data reflects real execution time
-   *  (not replay timing). ACP agents set duration to 0. */
-  hasDurationData: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -97,41 +58,29 @@ export function analyzeSession({
     assistantTextChars: 0,
     userTextChars: 0,
     reasoningChars: 0,
-    totalInputTokens: 0,
-    totalOutputTokens: 0,
-    totalReasoningTokens: 0,
-    totalCacheRead: 0,
-    totalCacheWrite: 0,
-    totalCost: 0,
   }
 
   const toolGroupMap = new Map<string, ToolGroup>()
   const individualCalls: IndividualToolCall[] = []
-  const steps: StepInfo[] = []
   let userCount = 0
   let assistantCount = 0
   let modelId = ''
   let earliestTime = Infinity
   let latestTime = 0
   let systemMessageSeen = false
-  let hasTokenData = false
-  let hasDurationData = false
 
   for (const msg of messages) {
     if (msg.timestamp < earliestTime) earliestTime = msg.timestamp
-    const endTime = msg.completedAt ?? msg.timestamp
-    if (endTime > latestTime) latestTime = endTime
+    if (msg.timestamp > latestTime) latestTime = msg.timestamp
 
     if (msg.role === 'user') {
       userCount++
 
-      // System message (only count once)
       if (!systemMessageSeen && msg.system) {
         contextBreakdown.systemMessageChars = msg.system.length
         systemMessageSeen = true
       }
 
-      // User text parts
       for (const part of msg.content) {
         if (part.type === 'text') {
           contextBreakdown.userTextChars += part.text.length
@@ -143,19 +92,6 @@ export function analyzeSession({
       assistantCount++
       if (!modelId && msg.model) modelId = msg.model
 
-      // Accumulate per-message token data if available
-      if (msg.tokens) {
-        hasTokenData = true
-        contextBreakdown.totalInputTokens += msg.tokens.input
-        contextBreakdown.totalOutputTokens += msg.tokens.output
-        contextBreakdown.totalReasoningTokens += msg.tokens.reasoning
-        contextBreakdown.totalCacheRead += msg.tokens.cacheRead
-        contextBreakdown.totalCacheWrite += msg.tokens.cacheWrite
-      }
-      if (msg.cost !== undefined) {
-        contextBreakdown.totalCost += msg.cost
-      }
-
       for (const part of msg.content) {
         if (part.type === 'text') {
           contextBreakdown.assistantTextChars += part.text.length
@@ -166,26 +102,7 @@ export function analyzeSession({
         }
 
         if (part.type === 'tool-call') {
-          if (part.durationMs > 0) hasDurationData = true
           processToolCall(part, toolGroupMap, individualCalls, contextBreakdown)
-        }
-
-        if (part.type === 'step-finish') {
-          // OpenCode reports `input` as only non-cached tokens.
-          // Total prompt tokens = input + cache.read + cache.write.
-          const totalPrompt =
-            part.tokens.input + part.tokens.cacheRead + part.tokens.cacheWrite
-          const cacheHitRate = totalPrompt > 0 ? part.tokens.cacheRead / totalPrompt : 0
-          steps.push({
-            index: steps.length + 1,
-            inputTokens: totalPrompt,
-            outputTokens: part.tokens.output,
-            reasoningTokens: part.tokens.reasoning,
-            cacheRead: part.tokens.cacheRead,
-            cacheWrite: part.tokens.cacheWrite,
-            cost: part.cost,
-            cacheHitRate,
-          })
         }
       }
     }
@@ -195,13 +112,9 @@ export function analyzeSession({
   const toolsByContextSize = [...toolGroups].sort(
     (a, b) => b.totalOutputChars + b.totalInputChars - (a.totalOutputChars + a.totalInputChars),
   )
-  const toolsByDuration = [...toolGroups].sort((a, b) => b.totalDurationMs - a.totalDurationMs)
 
   const individualCallsBySize = [...individualCalls]
     .sort((a, b) => b.totalChars - a.totalChars)
-    .slice(0, 10)
-  const individualCallsByDuration = [...individualCalls]
-    .sort((a, b) => b.durationMs - a.durationMs)
     .slice(0, 10)
 
   const totalDurationMs =
@@ -212,14 +125,9 @@ export function analyzeSession({
     modelId,
     contextBreakdown,
     toolsByContextSize,
-    toolsByDuration,
     individualCallsBySize,
-    individualCallsByDuration,
-    steps,
     messageCount: { user: userCount, assistant: assistantCount },
     totalDurationMs,
-    hasTokenData,
-    hasDurationData,
   }
 }
 
@@ -235,63 +143,62 @@ function processToolCall(
   contextBreakdown.toolOutputChars += outputStr.length
   contextBreakdown.toolInputChars += inputStr.length
 
-  // Track individual call with a descriptive label
   const totalChars = inputStr.length + outputStr.length
   const individualLabel = buildIndividualLabel(part.name, part.input)
-  individualCalls.push({
-    label: individualLabel,
-    toolName: part.name,
-    totalChars,
-    durationMs: part.durationMs,
-  })
+  individualCalls.push({ label: individualLabel, totalChars })
 
-  // Group key: tool name (bash commands are already sub-categorized by the
-  // platform normalization layer, e.g. "bash (git)")
-  const groupKey = part.name
+  // Group key: tool name. Bash commands are sub-categorized.
+  let groupKey = part.name
+  const lower = part.name.toLowerCase()
+  if ((lower === 'bash' || lower === 'execute') && typeof part.input.command === 'string') {
+    const bashCmd = extractBashCommand(part.input.command)
+    groupKey = `bash (${bashCmd})`
+  }
+  if (lower === 'exec_command' && typeof part.input.cmd === 'string') {
+    const bashCmd = extractBashCommand(part.input.cmd)
+    groupKey = `exec (${bashCmd})`
+  }
 
   const existing = toolGroupMap.get(groupKey)
   if (existing) {
     existing.totalOutputChars += outputStr.length
     existing.totalInputChars += inputStr.length
-    existing.totalDurationMs += part.durationMs
     existing.count++
-    if (part.durationMs > existing.maxDurationMs) existing.maxDurationMs = part.durationMs
   } else {
     toolGroupMap.set(groupKey, {
       label: groupKey,
-      toolName: part.name,
       totalOutputChars: outputStr.length,
       totalInputChars: inputStr.length,
-      totalDurationMs: part.durationMs,
       count: 1,
-      maxDurationMs: part.durationMs,
     })
   }
 }
 
-// Build a descriptive label for an individual tool call. No truncation here;
-// the renderer handles that based on available terminal width.
 function buildIndividualLabel(toolName: string, input: Record<string, unknown>): string {
   const lower = toolName.toLowerCase()
 
-  // Handle bash sub-categories like "bash (git)"
-  if (lower.startsWith('bash')) {
+  if (lower.startsWith('bash') || lower === 'execute') {
     const cmd = typeof input.command === 'string' ? input.command.trim() : ''
     return `bash: ${cmd}`
   }
 
+  if (lower === 'exec_command') {
+    const cmd = typeof input.cmd === 'string' ? input.cmd.trim() : ''
+    return `exec: ${cmd}`
+  }
+
   if (lower === 'read') {
-    const path = typeof input.filePath === 'string' ? input.filePath : ''
+    const path = typeof input.filePath === 'string' ? input.filePath : typeof input.file_path === 'string' ? input.file_path : ''
     return `read: ${path}`
   }
 
   if (lower === 'write') {
-    const path = typeof input.filePath === 'string' ? input.filePath : ''
+    const path = typeof input.filePath === 'string' ? input.filePath : typeof input.file_path === 'string' ? input.file_path : ''
     return `write: ${path}`
   }
 
   if (lower === 'edit') {
-    const path = typeof input.filePath === 'string' ? input.filePath : ''
+    const path = typeof input.filePath === 'string' ? input.filePath : typeof input.file_path === 'string' ? input.file_path : ''
     return `edit: ${path}`
   }
 
@@ -325,17 +232,8 @@ function buildIndividualLabel(toolName: string, input: Record<string, unknown>):
     return `skill: ${name}`
   }
 
-  // Codex exec_command
-  if (lower === 'exec_command') {
-    const cmd = typeof input.cmd === 'string' ? input.cmd.trim() : ''
-    return `exec: ${cmd}`
-  }
-
-  // Fallback: tool name + first string value from input
   const firstStr = Object.values(input).find((v) => typeof v === 'string')
-  if (typeof firstStr === 'string') {
-    return `${toolName}: ${firstStr}`
-  }
+  if (typeof firstStr === 'string') return `${toolName}: ${firstStr}`
 
   return toolName
 }

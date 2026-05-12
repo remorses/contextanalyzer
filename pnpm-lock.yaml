@@ -17,9 +17,6 @@ importers:
       '@clack/prompts':
         specifier: ^0.10.0
         version: 0.10.1
-      '@opencode-ai/sdk':
-        specifier: ^1.4.6
-        version: 1.14.46
       '@zed-industries/codex-acp':
         specifier: ^0.14.0
         version: 0.14.0
@@ -325,9 +322,6 @@ packages:
 
   '@nodable/entities@2.1.0':
     resolution: {integrity: sha512-nyT7T3nbMyBI/lvr6L5TyWbFJAI9FTgVRakNoBqCD+PmID8DzFrrNdLLtHMwMszOtqZa8PAOV24ZqDnQrhQINA==}
-
-  '@opencode-ai/sdk@1.14.46':
-    resolution: {integrity: sha512-7KOMuoCkNI+bLOw3GCg0nWZ5m7A/MzNsyLfTbZYmE/DIaUqkV2LNRULtrW6PHL1WtYVmJEFPws4dbw/4dVxjzA==}
 
   '@tokenizer/inflate@0.4.1':
     resolution: {integrity: sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA==}
@@ -1234,10 +1228,6 @@ snapshots:
     optional: true
 
   '@nodable/entities@2.1.0': {}
-
-  '@opencode-ai/sdk@1.14.46':
-    dependencies:
-      cross-spawn: 7.0.6
 
   '@tokenizer/inflate@0.4.1':
     dependencies:

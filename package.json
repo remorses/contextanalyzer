@@ -52,7 +52,6 @@
     "@agentclientprotocol/claude-agent-acp": "^0.33.1",
     "@agentclientprotocol/sdk": "^0.21.0",
     "@clack/prompts": "^0.10.0",
-    "@opencode-ai/sdk": "^1.4.6",
     "@zed-industries/codex-acp": "^0.14.0",
     "goke": "^6.10.0",
     "just-bash": "^3.0.0",

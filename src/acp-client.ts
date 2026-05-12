@@ -12,6 +12,11 @@ import {
   type Client,
   type Agent,
   type SessionNotification,
+  type SessionUpdate,
+  type ContentChunk,
+  type ToolCall,
+  type ToolCallUpdate,
+  type ToolCallContent,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
 } from '@agentclientprotocol/sdk'
@@ -25,15 +30,19 @@ import type {
 // Types
 // ---------------------------------------------------------------------------
 
-export type AcpConnection = {
-  connection: ClientSideConnection
-  process: ChildProcess
-}
-
 export type SpawnConfig = {
   cmd: string
   args: string[]
 }
+
+export type AcpConnection = {
+  connection: ClientSideConnection
+  process: ChildProcess
+  /** Mutable holder so fetchMessages() can swap in a fresh collector */
+  active: ActiveCollector
+}
+
+type ActiveCollector = { collector: NotificationCollector }
 
 // ---------------------------------------------------------------------------
 // Notification collector
@@ -43,8 +52,8 @@ export type SpawnConfig = {
 // NormalizedMessage[].
 //
 // Message boundaries are tracked via both role changes AND messageId
-// changes. ContentChunk has an optional messageId; a change in messageId
-// signals a new message even if the role stays the same.
+// changes (ContentChunk.messageId). A change in messageId signals a
+// new message even if the role stays the same.
 // ---------------------------------------------------------------------------
 
 type PendingToolCall = {
@@ -52,6 +61,10 @@ type PendingToolCall = {
   kind?: string
   input: Record<string, unknown>
 }
+
+// Discriminated union helper: extract the variant where sessionUpdate === T
+type UpdateVariant<T extends SessionUpdate['sessionUpdate']> =
+  Extract<SessionUpdate, { sessionUpdate: T }>
 
 class NotificationCollector {
   messages: NormalizedMessage[] = []
@@ -67,26 +80,17 @@ class NotificationCollector {
 
     switch (update.sessionUpdate) {
       case 'user_message_chunk': {
-        const chunk = update as { messageId?: string | null; content: { type: string; text?: string } }
-        this.startChunk('user', chunk.messageId)
-        if (update.content.type === 'text') {
-          this.currentUserParts.push({ type: 'text', text: update.content.text })
-        }
+        this.handleContentChunk('user', update)
         break
       }
 
       case 'agent_message_chunk': {
-        const chunk = update as { messageId?: string | null; content: { type: string; text?: string } }
-        this.startChunk('assistant', chunk.messageId)
-        if (update.content.type === 'text') {
-          this.currentAssistantParts.push({ type: 'text', text: update.content.text })
-        }
+        this.handleContentChunk('assistant', update)
         break
       }
 
       case 'agent_thought_chunk': {
-        const chunk = update as { messageId?: string | null; content: { type: string; text?: string } }
-        this.startChunk('assistant', chunk.messageId)
+        this.startChunk('assistant', update.messageId)
         if (update.content.type === 'text') {
           this.currentAssistantParts.push({ type: 'reasoning', text: update.content.text })
         }
@@ -94,63 +98,71 @@ class NotificationCollector {
       }
 
       case 'tool_call': {
-        this.startChunk('assistant', null)
-        const meta = update._meta as { claudeCode?: { toolName?: string } } | undefined
-        const toolName = meta?.claudeCode?.toolName || update.title || 'unknown'
-        const rawInput = toRecord(update.rawInput)
-
-        this.pendingTools.set(update.toolCallId, {
-          name: toolName,
-          kind: update.kind ?? undefined,
-          input: rawInput,
-        })
+        this.handleToolCall(update)
         break
       }
 
       case 'tool_call_update': {
-        const pending = this.pendingTools.get(update.toolCallId)
-        if (!pending) break
-
-        // Merge update fields into pending state — updates can carry
-        // rawInput, rawOutput, title, kind not present in initial tool_call
-        if (update.rawInput !== undefined) pending.input = toRecord(update.rawInput)
-        if (update.kind) pending.kind = update.kind
-        const meta = update._meta as { claudeCode?: { toolName?: string } } | undefined
-        if (meta?.claudeCode?.toolName) pending.name = meta.claudeCode.toolName
-        else if (update.title) pending.name = update.title
-
-        const isTerminal = update.status === 'completed' || update.status === 'failed'
-        if (!isTerminal) break
-
-        // Extract output from rawOutput or content
-        let output = ''
-        if (update.rawOutput !== undefined) {
-          output = typeof update.rawOutput === 'string'
-            ? update.rawOutput
-            : JSON.stringify(update.rawOutput)
-        } else if (update.content) {
-          const textParts = update.content
-            .filter((c): c is { type: 'content'; content: { type: 'text'; text: string } } =>
-              c.type === 'content' && c.content.type === 'text',
-            )
-          output = textParts.map((c) => c.content.text).join('\n')
-        }
-
-        this.currentAssistantParts.push({
-          type: 'tool-call',
-          name: pending.name,
-          kind: pending.kind,
-          input: pending.input,
-          output,
-        })
-
-        this.pendingTools.delete(update.toolCallId)
+        this.handleToolCallUpdate(update)
         break
       }
 
       default:
         break
     }
+  }
+
+  private handleContentChunk(
+    role: 'user' | 'assistant',
+    chunk: ContentChunk & { sessionUpdate: string },
+  ) {
+    this.startChunk(role, chunk.messageId)
+    if (chunk.content.type === 'text') {
+      const parts = role === 'user' ? this.currentUserParts : this.currentAssistantParts
+      parts.push({ type: 'text', text: chunk.content.text })
+    }
+  }
+
+  private handleToolCall(update: UpdateVariant<'tool_call'>) {
+    this.startChunk('assistant', null)
+
+    const meta = update._meta as { claudeCode?: { toolName?: string } } | null | undefined
+    const toolName = meta?.claudeCode?.toolName || update.title || 'unknown'
+
+    this.pendingTools.set(update.toolCallId, {
+      name: toolName,
+      kind: update.kind ?? undefined,
+      input: toRecord(update.rawInput),
+    })
+  }
+
+  private handleToolCallUpdate(update: UpdateVariant<'tool_call_update'>) {
+    const pending = this.pendingTools.get(update.toolCallId)
+    if (!pending) return
+
+    // Merge update fields into pending state — updates can carry
+    // rawInput, rawOutput, title, kind not present in initial tool_call
+    if (update.rawInput !== undefined) pending.input = toRecord(update.rawInput)
+    if (update.kind) pending.kind = update.kind
+
+    const meta = update._meta as { claudeCode?: { toolName?: string } } | null | undefined
+    if (meta?.claudeCode?.toolName) pending.name = meta.claudeCode.toolName
+    else if (update.title) pending.name = update.title
+
+    const isTerminal = update.status === 'completed' || update.status === 'failed'
+    if (!isTerminal) return
+
+    const output = extractToolOutput(update)
+
+    this.currentAssistantParts.push({
+      type: 'tool-call',
+      name: pending.name,
+      kind: pending.kind,
+      input: pending.input,
+      output,
+    })
+
+    this.pendingTools.delete(update.toolCallId)
   }
 
   private startChunk(newRole: 'user' | 'assistant', messageId?: string | null) {
@@ -195,6 +207,10 @@ class NotificationCollector {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function toRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>
@@ -202,12 +218,32 @@ function toRecord(value: unknown): Record<string, unknown> {
   return {}
 }
 
-// ---------------------------------------------------------------------------
-// ACP client handler — uses a mutable holder so fetchMessages() can swap in
-// a fresh collector per session load.
-// ---------------------------------------------------------------------------
+function extractToolOutput(update: ToolCallUpdate): string {
+  if (update.rawOutput !== undefined) {
+    return typeof update.rawOutput === 'string'
+      ? update.rawOutput
+      : JSON.stringify(update.rawOutput)
+  }
 
-type ActiveCollector = { collector: NotificationCollector }
+  if (update.content) {
+    return update.content
+      .filter((c): c is Extract<ToolCallContent, { type: 'content' }> =>
+        c.type === 'content',
+      )
+      .filter((c) => c.content.type === 'text')
+      .map((c) => {
+        const block = c.content as { type: 'text'; text: string }
+        return block.text
+      })
+      .join('\n')
+  }
+
+  return ''
+}
+
+// ---------------------------------------------------------------------------
+// Minimal ACP client handler
+// ---------------------------------------------------------------------------
 
 function createMinimalClient(active: ActiveCollector): (agent: Agent) => Client {
   return (_agent: Agent) => ({
@@ -241,7 +277,7 @@ export async function connectAcp({
 
   const spawnResult = await new Promise<Error | void>((resolve) => {
     proc.once('error', (cause) => {
-      resolve(new Error(`Failed to spawn ACP agent`, { cause }))
+      resolve(new Error('Failed to spawn ACP agent', { cause }))
     })
     setTimeout(() => { resolve() }, 100)
   })
@@ -274,10 +310,7 @@ export async function connectAcp({
     return new Error('Agent does not support session listing')
   }
 
-  // Attach active collector to connection for fetchMessages to use
-  ;(connection as any)._active = active
-
-  return { connection, process: proc }
+  return { connection, process: proc, active }
 }
 
 export async function listSessions(
@@ -305,8 +338,7 @@ export async function fetchMessages(
   conn: AcpConnection,
   { sessionId, cwd }: { sessionId: string; cwd?: string },
 ): Promise<Error | NormalizedMessage[]> {
-  const active = (conn.connection as any)._active as ActiveCollector
-  active.collector = new NotificationCollector()
+  conn.active.collector = new NotificationCollector()
 
   const loadResult = await conn.connection
     .loadSession({
@@ -318,7 +350,7 @@ export async function fetchMessages(
 
   if (loadResult instanceof Error) return loadResult
 
-  return active.collector.finalize()
+  return conn.active.collector.finalize()
 }
 
 export function disconnect(conn: AcpConnection) {

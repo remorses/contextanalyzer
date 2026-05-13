@@ -1,7 +1,7 @@
 {
   "name": "contextanalyzer",
   "version": "0.1.0",
-  "description": "Analyze coding agent session context usage and tool call performance with terminal histograms. Supports OpenCode, Claude Code, and Codex.",
+  "description": "Analyze OpenCode session context usage and tool call performance with terminal histograms.",
   "type": "module",
   "bin": "dist/cli.js",
   "main": "./dist/analyze.js",
@@ -33,9 +33,6 @@
   "bugs": "https://github.com/remorses/contextanalyzer/issues",
   "keywords": [
     "opencode",
-    "claude-code",
-    "codex",
-    "acp",
     "context",
     "analyzer",
     "token",
@@ -49,16 +46,13 @@
     "prepublishOnly": "rimraf dist \"*.tsbuildinfo\" && pnpm build"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.33.1",
-    "@agentclientprotocol/sdk": "^0.21.0",
     "@clack/prompts": "^0.10.0",
-    "@zed-industries/codex-acp": "^0.14.0",
+    "@opencode-ai/sdk": "^1.14.48",
     "goke": "^6.10.0",
     "just-bash": "^3.0.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@opencode-ai/sdk": "^1.14.48",
     "@types/node": "^25.6.2",
     "rimraf": "^6.0.1",
     "tsx": "^4.20.5",

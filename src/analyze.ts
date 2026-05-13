@@ -1,9 +1,17 @@
-// Core analysis engine. Takes NormalizedMessage[] from any agent
-// (OpenCode, Claude Code, Codex) and produces structured analysis
-// results for rendering.
+// Core analysis engine. Takes MessageWithParts[] from the OpenCode SDK
+// and produces structured analysis results for rendering.
 
-import type { NormalizedMessage, NormalizedPart } from './platform.ts'
+import type { MessageWithParts, AssistantMessage } from './opencode-client.ts'
 import { extractBashCommand } from './bash-command.ts'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Total tokens from a snapshot (input is uncached only, so add cache) */
+function getTokenTotal(tokens: AssistantMessage['tokens']): number {
+  return tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+}
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -18,24 +26,57 @@ export type ContextBreakdown = {
   reasoningChars: number
 }
 
+export type TokenUsage = {
+  /** Non-cached input tokens (as reported by OpenCode) */
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  cacheRead: number
+  cacheWrite: number
+  /** input + cache.read + cache.write */
+  totalPromptTokens: number
+  /** totalPromptTokens + outputTokens + reasoningTokens */
+  totalTokens: number
+  totalCost: number
+}
+
 export type ToolGroup = {
   label: string
   totalOutputChars: number
   totalInputChars: number
+  totalDurationMs: number
   count: number
+  maxDurationMs: number
 }
 
 export type IndividualToolCall = {
   label: string
   totalChars: number
+  durationMs: number
+}
+
+export type StepInfo = {
+  index: number
+  /** Total prompt tokens: input + cache.read + cache.write */
+  promptTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  cacheRead: number
+  cacheWrite: number
+  cost: number
+  cacheHitRate: number
 }
 
 export type AnalysisResult = {
   sessionId: string
   modelId: string
   contextBreakdown: ContextBreakdown
+  tokenUsage: TokenUsage
   toolsByContextSize: ToolGroup[]
+  toolsByDuration: ToolGroup[]
   individualCallsBySize: IndividualToolCall[]
+  individualCallsByDuration: IndividualToolCall[]
+  steps: StepInfo[]
   messageCount: { user: number; assistant: number }
   totalDurationMs: number
 }
@@ -49,7 +90,7 @@ export function analyzeSession({
   messages,
 }: {
   sessionId: string
-  messages: NormalizedMessage[]
+  messages: MessageWithParts[]
 }): AnalysisResult {
   const contextBreakdown: ContextBreakdown = {
     systemMessageChars: 0,
@@ -60,39 +101,70 @@ export function analyzeSession({
     reasoningChars: 0,
   }
 
+  const tokenUsage: TokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalPromptTokens: 0,
+    totalTokens: 0,
+    totalCost: 0,
+  }
+
   const toolGroupMap = new Map<string, ToolGroup>()
   const individualCalls: IndividualToolCall[] = []
+  const steps: StepInfo[] = []
   let userCount = 0
   let assistantCount = 0
   let modelId = ''
   let earliestTime = Infinity
   let latestTime = 0
   let systemMessageSeen = false
+  // AssistantMessage.tokens is a context snapshot (full window at that point),
+  // NOT incremental per-message. We track the last non-zero snapshot and use
+  // it as the session's token usage. Cost is the exception: it IS incremental.
+  let lastTokenSnapshot: AssistantMessage | null = null
 
   for (const msg of messages) {
-    if (msg.timestamp < earliestTime) earliestTime = msg.timestamp
-    if (msg.timestamp > latestTime) latestTime = msg.timestamp
+    const { info, parts } = msg
 
-    if (msg.role === 'user') {
+    if (info.role === 'user') {
       userCount++
 
-      if (!systemMessageSeen && msg.system) {
-        contextBreakdown.systemMessageChars = msg.system.length
+      if (!systemMessageSeen && info.system) {
+        contextBreakdown.systemMessageChars = info.system.length
         systemMessageSeen = true
       }
 
-      for (const part of msg.content) {
-        if (part.type === 'text') {
+      if (info.time.created < earliestTime) earliestTime = info.time.created
+      if (info.time.created > latestTime) latestTime = info.time.created
+
+      for (const part of parts) {
+        if (part.type === 'text' && !part.synthetic) {
           contextBreakdown.userTextChars += part.text.length
         }
       }
     }
 
-    if (msg.role === 'assistant') {
+    if (info.role === 'assistant') {
       assistantCount++
-      if (!modelId && msg.model) modelId = msg.model
+      if (!modelId && info.modelID) modelId = info.modelID
 
-      for (const part of msg.content) {
+      // Cost is incremental per-message, so sum it
+      tokenUsage.totalCost += info.cost
+
+      // Tokens are a snapshot; keep the last one with non-zero data
+      if (getTokenTotal(info.tokens) > 0) {
+        lastTokenSnapshot = info
+      }
+
+      if (info.time.created < earliestTime) earliestTime = info.time.created
+      if (info.time.completed && info.time.completed > latestTime) {
+        latestTime = info.time.completed
+      }
+
+      for (const part of parts) {
         if (part.type === 'text') {
           contextBreakdown.assistantTextChars += part.text.length
         }
@@ -101,20 +173,51 @@ export function analyzeSession({
           contextBreakdown.reasoningChars += part.text.length
         }
 
-        if (part.type === 'tool-call') {
-          processToolCall(part, toolGroupMap, individualCalls, contextBreakdown)
+        if (part.type === 'tool') {
+          processToolPart(part, toolGroupMap, individualCalls, contextBreakdown)
+        }
+
+        if (part.type === 'step-finish') {
+          const promptTokens = part.tokens.input + part.tokens.cache.read + part.tokens.cache.write
+          const cacheHitRate = promptTokens > 0 ? part.tokens.cache.read / promptTokens : 0
+          steps.push({
+            index: steps.length + 1,
+            promptTokens,
+            outputTokens: part.tokens.output,
+            reasoningTokens: part.tokens.reasoning,
+            cacheRead: part.tokens.cache.read,
+            cacheWrite: part.tokens.cache.write,
+            cost: part.cost,
+            cacheHitRate,
+          })
         }
       }
     }
+  }
+
+  // Derive token totals from the last snapshot (not summed across messages)
+  if (lastTokenSnapshot) {
+    const { tokens } = lastTokenSnapshot
+    tokenUsage.inputTokens = tokens.input
+    tokenUsage.outputTokens = tokens.output
+    tokenUsage.reasoningTokens = tokens.reasoning
+    tokenUsage.cacheRead = tokens.cache.read
+    tokenUsage.cacheWrite = tokens.cache.write
+    tokenUsage.totalPromptTokens = tokens.input + tokens.cache.read + tokens.cache.write
+    tokenUsage.totalTokens = getTokenTotal(tokens)
   }
 
   const toolGroups = [...toolGroupMap.values()]
   const toolsByContextSize = [...toolGroups].sort(
     (a, b) => b.totalOutputChars + b.totalInputChars - (a.totalOutputChars + a.totalInputChars),
   )
+  const toolsByDuration = [...toolGroups].sort((a, b) => b.totalDurationMs - a.totalDurationMs)
 
   const individualCallsBySize = [...individualCalls]
     .sort((a, b) => b.totalChars - a.totalChars)
+    .slice(0, 10)
+  const individualCallsByDuration = [...individualCalls]
+    .sort((a, b) => b.durationMs - a.durationMs)
     .slice(0, 10)
 
   const totalDurationMs =
@@ -124,55 +227,73 @@ export function analyzeSession({
     sessionId,
     modelId,
     contextBreakdown,
+    tokenUsage,
     toolsByContextSize,
+    toolsByDuration,
     individualCallsBySize,
+    individualCallsByDuration,
+    steps,
     messageCount: { user: userCount, assistant: assistantCount },
     totalDurationMs,
   }
 }
 
-function processToolCall(
-  part: Extract<NormalizedPart, { type: 'tool-call' }>,
+// ---------------------------------------------------------------------------
+// Tool processing
+// ---------------------------------------------------------------------------
+
+function processToolPart(
+  part: Extract<import('@opencode-ai/sdk/v2').Part, { type: 'tool' }>,
   toolGroupMap: Map<string, ToolGroup>,
   individualCalls: IndividualToolCall[],
   contextBreakdown: ContextBreakdown,
 ) {
-  const inputStr = JSON.stringify(part.input)
-  const outputStr = part.output
+  const { state } = part
+  if (state.status !== 'completed' && state.status !== 'error') return
+
+  const inputStr = JSON.stringify(state.input)
+  const outputStr = state.status === 'completed' ? state.output : state.error
+  const durationMs = state.time.end - state.time.start
 
   contextBreakdown.toolOutputChars += outputStr.length
   contextBreakdown.toolInputChars += inputStr.length
 
   const totalChars = inputStr.length + outputStr.length
-  const individualLabel = buildIndividualLabel(part.name, part.input)
-  individualCalls.push({ label: individualLabel, totalChars })
+  const individualLabel = buildIndividualLabel(part.tool, state.input)
+  individualCalls.push({ label: individualLabel, totalChars, durationMs })
 
-  // Group key: tool name. Bash commands are sub-categorized.
-  let groupKey = part.name
-  const lower = part.name.toLowerCase()
-  if ((lower === 'bash' || lower === 'execute') && typeof part.input.command === 'string') {
-    const bashCmd = extractBashCommand(part.input.command)
-    groupKey = `bash (${bashCmd})`
+  // Group key: tool name. Bash commands are sub-categorized by first command.
+  let groupKey = part.tool
+  const lower = part.tool.toLowerCase()
+  if ((lower === 'bash' || lower === 'execute') && typeof state.input.command === 'string') {
+    groupKey = `bash (${extractBashCommand(state.input.command)})`
   }
-  if (lower === 'exec_command' && typeof part.input.cmd === 'string') {
-    const bashCmd = extractBashCommand(part.input.cmd)
-    groupKey = `exec (${bashCmd})`
+  if (lower === 'exec_command' && typeof state.input.cmd === 'string') {
+    groupKey = `exec (${extractBashCommand(state.input.cmd)})`
   }
 
   const existing = toolGroupMap.get(groupKey)
   if (existing) {
     existing.totalOutputChars += outputStr.length
     existing.totalInputChars += inputStr.length
+    existing.totalDurationMs += durationMs
     existing.count++
+    if (durationMs > existing.maxDurationMs) existing.maxDurationMs = durationMs
   } else {
     toolGroupMap.set(groupKey, {
       label: groupKey,
       totalOutputChars: outputStr.length,
       totalInputChars: inputStr.length,
+      totalDurationMs: durationMs,
       count: 1,
+      maxDurationMs: durationMs,
     })
   }
 }
+
+// ---------------------------------------------------------------------------
+// Label builders
+// ---------------------------------------------------------------------------
 
 function buildIndividualLabel(toolName: string, input: Record<string, unknown>): string {
   const lower = toolName.toLowerCase()

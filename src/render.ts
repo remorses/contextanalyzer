@@ -3,7 +3,7 @@
 // to keep layout consistent and avoid duplicated padding/bar logic.
 
 import { colors } from 'goke'
-import type { AnalysisResult, ContextBreakdown, ToolGroup, IndividualToolCall } from './analyze.ts'
+import type { AnalysisResult, ContextBreakdown, TokenUsage, ToolGroup, IndividualToolCall, StepInfo } from './analyze.ts'
 
 // Only use █ (full block) and ▌ (left half block). The eighth-width
 // partial characters (▏▎▍▋▊▉) show visible gaps in most terminal fonts
@@ -27,6 +27,12 @@ function formatDuration(ms: number): string {
   if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`
   if (ms >= 1_000) return `${(ms / 1_000).toFixed(1)}s`
   return `${Math.round(ms)}ms`
+}
+
+function formatCost(usd: number): string {
+  if (usd >= 1) return `$${usd.toFixed(2)}`
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`
+  return `$${usd.toFixed(4)}`
 }
 
 function padRight(s: string, len: number) {
@@ -129,15 +135,24 @@ function autoLabelWidth(labels: string[], min: number, max: number): number {
 // Public render
 // ---------------------------------------------------------------------------
 
-export function renderAnalysis(result: AnalysisResult, { top = 15 }: { top?: number } = {}) {
+export function renderAnalysis(result: AnalysisResult, { top = 15, showSteps = false }: { top?: number; showSteps?: boolean } = {}) {
   const lines: string[] = []
 
   lines.push(renderOverview(result))
   lines.push(renderContextBreakdown(result.contextBreakdown))
   lines.push(renderToolContextHistogram(result.toolsByContextSize, top))
+  lines.push(renderToolDurationHistogram(result.toolsByDuration, top))
 
   if (result.individualCallsBySize.length > 0) {
-    lines.push(renderIndividualCallsHistogram(result.individualCallsBySize, top))
+    lines.push(renderIndividualCallsHistogram(result.individualCallsBySize, 'Biggest Individual Tool Calls', 'chars', top))
+  }
+
+  if (result.individualCallsByDuration.length > 0) {
+    lines.push(renderIndividualCallsHistogram(result.individualCallsByDuration, 'Slowest Individual Tool Calls', 'duration', top))
+  }
+
+  if (showSteps && result.steps.length > 0) {
+    lines.push(renderStepsTable(result.steps))
   }
 
   return lines.join('\n')
@@ -151,23 +166,33 @@ function renderOverview(result: AnalysisResult): string {
   const lines: string[] = []
   lines.push(heading('Session Overview'))
 
-  const ctx = result.contextBreakdown
-  const charsToTokens = (chars: number) => Math.round(chars / 4)
-  const totalEstimatedTokens = charsToTokens(
-    ctx.systemMessageChars +
-    ctx.toolOutputChars +
-    ctx.toolInputChars +
-    ctx.assistantTextChars +
-    ctx.userTextChars,
-  )
+  const t = result.tokenUsage
 
   const rows: [string, string][] = [
     ['Session', result.sessionId],
     ['Model', result.modelId || 'unknown'],
     ['Messages', `${result.messageCount.user} user, ${result.messageCount.assistant} assistant`],
     ['Duration', formatDuration(result.totalDurationMs)],
-    ['Total Tokens', `~${colors.bold(formatNumber(totalEstimatedTokens))}`],
+    ['Steps', String(result.steps.length)],
   ]
+
+  if (t.totalCost > 0) {
+    rows.push(['Total Cost', formatCost(t.totalCost)])
+  }
+
+  rows.push(
+    ['Prompt Tokens', `${formatNumber(t.totalPromptTokens)} (${formatNumber(t.cacheRead)} cached, ${formatNumber(t.inputTokens)} uncached)`],
+    ['Output Tokens', formatNumber(t.outputTokens)],
+  )
+
+  if (t.reasoningTokens > 0) {
+    rows.push(['Reasoning Tokens', formatNumber(t.reasoningTokens)])
+  }
+
+  rows.push(
+    ['Cache Write', formatNumber(t.cacheWrite)],
+    ['Total Tokens', colors.bold(formatNumber(t.totalTokens))],
+  )
 
   for (const [label, value] of rows) {
     lines.push(`  ${colors.dim(padRight(label, 20))} ${value}`)
@@ -191,7 +216,7 @@ function renderContextBreakdown(ctx: ContextBreakdown): string {
   const totalTokens = entries.reduce((s, e) => s + e.value, 0)
 
   const result = renderHistogram({
-    title: 'Context Breakdown (estimated tokens)',
+    title: 'Context Breakdown (estimated tokens from chars)',
     rows: entries,
     barColor: colors.green,
     formatValue: formatNumber,
@@ -228,24 +253,84 @@ function renderToolContextHistogram(groups: ToolGroup[], top: number): string {
   })
 }
 
-function renderIndividualCallsHistogram(calls: IndividualToolCall[], top: number): string {
+function renderToolDurationHistogram(groups: ToolGroup[], top: number): string {
+  const displayed = groups.slice(0, top)
+  const grandTotal = groups.reduce((s, g) => s + g.totalDurationMs, 0)
+  const labelW = autoLabelWidth(displayed.map((g) => g.label), 18, 30)
+
+  return renderHistogram({
+    title: 'Tool Calls by Duration',
+    rows: displayed.map((g) => {
+      const avg = g.count > 0 ? g.totalDurationMs / g.count : 0
+      return {
+        label: g.label,
+        value: g.totalDurationMs,
+        detail: `(${g.count} calls, avg ${formatDuration(avg)}, max ${formatDuration(g.maxDurationMs)})`,
+      }
+    }),
+    grandTotal,
+    barColor: colors.magenta,
+    formatValue: formatDuration,
+    labelWidth: labelW,
+    barWidth: 35,
+    headers: ['Tool', 'Duration'],
+    emptyMessage: 'No tool calls with timing data',
+    moreCount: Math.max(0, groups.length - top),
+  })
+}
+
+function renderIndividualCallsHistogram(
+  calls: IndividualToolCall[],
+  title: string,
+  mode: 'chars' | 'duration',
+  top: number,
+): string {
   const charsToTokens = (chars: number) => Math.round(chars / 4)
   const displayed = calls.slice(0, top)
   const termWidth = process.stdout.columns || 120
   const labelW = Math.min(70, Math.floor(termWidth * 0.55))
   const barW = Math.min(20, Math.max(8, termWidth - 2 - labelW - 1 - 8 - 1 - 7))
 
+  const getValue = (c: IndividualToolCall) => mode === 'chars' ? charsToTokens(c.totalChars) : c.durationMs
+  const fmtValue = (v: number) => mode === 'chars' ? formatNumber(v) : formatDuration(v)
+  const barClr = mode === 'chars' ? colors.yellow : colors.magenta
+
   return renderHistogram({
-    title: 'Biggest Individual Tool Calls',
+    title,
     rows: displayed.map((c) => ({
       label: c.label,
-      value: charsToTokens(c.totalChars),
+      value: getValue(c),
     })),
-    barColor: colors.yellow,
-    formatValue: formatNumber,
+    barColor: barClr,
+    formatValue: fmtValue,
     labelWidth: labelW,
     barWidth: barW,
-    headers: ['Call', 'Tokens'],
+    headers: ['Call', mode === 'chars' ? 'Tokens' : 'Duration'],
     emptyMessage: 'No tool calls found',
   })
+}
+
+function renderStepsTable(steps: StepInfo[]): string {
+  const lines: string[] = []
+  lines.push(heading('Per-Step Token Breakdown'))
+
+  const hasCost = steps.some((s) => s.cost > 0)
+  const hasReasoning = steps.some((s) => s.reasoningTokens > 0)
+
+  let header = `  ${colors.dim(padRight('#', 4))} ${colors.dim(padRight('Prompt', 10))} ${colors.dim(padRight('Output', 10))}`
+  if (hasReasoning) header += ` ${colors.dim(padRight('Reasoning', 10))}`
+  header += ` ${colors.dim(padRight('Cache%', 8))}`
+  if (hasCost) header += ` ${colors.dim(padRight('Cost', 8))}`
+  lines.push(header)
+
+  for (const step of steps) {
+    const cachePercent = (step.cacheHitRate * 100).toFixed(0) + '%'
+    let row = `  ${padRight(String(step.index), 4)} ${padRight(formatNumber(step.promptTokens), 10)} ${padRight(formatNumber(step.outputTokens), 10)}`
+    if (hasReasoning) row += ` ${padRight(formatNumber(step.reasoningTokens), 10)}`
+    row += ` ${padRight(cachePercent, 8)}`
+    if (hasCost) row += ` ${padRight(formatCost(step.cost), 8)}`
+    lines.push(row)
+  }
+
+  return lines.join('\n')
 }

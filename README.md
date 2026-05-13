@@ -19,6 +19,14 @@ Or install globally:
 npm i -g contextanalyzer
 ```
 
+## Install skill for AI agents
+
+```bash
+npx -y skills add remorses/contextanalyzer
+```
+
+This installs the contextanalyzer skill for AI coding agents. Load it when debugging OpenCode sessions to find which tools spent the most tokens or time.
+
 ## How it works
 
 contextanalyzer connects to a local [OpenCode](https://opencode.ai) server, reads your session history, and renders terminal histograms showing exactly where context tokens and wall-clock time are spent.
@@ -82,35 +90,37 @@ contextanalyzer ses_abc123 --steps
 
 ### Session overview
 
-Shows model, message counts, total tokens, and cache efficiency at a glance.
+Shows model, message counts, real token usage from the API, cost, and cache stats.
 
 ```
 Session Overview
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Session              ses_1e8089b59ffeBxY02rHAW1U0hz
+  Session              ses_1e36dd4e2ffeFb3I7nov1HFh04
   Model                claude-opus-4-6
-  Messages             16 user, 178 assistant
-  Duration             58.4m
-  Steps                176
-  Prompt Tokens        26.8M (26.1M cached, 198 uncached)
-  Output Tokens        53.9K
-  Cache Write          735.3K
+  Messages             24 user, 306 assistant
+  Duration             1133.3m
+  Steps                297
+  Total Cost           $31.38
+  Prompt Tokens        214.3K (214.2K cached, 1 uncached)
+  Output Tokens        2
+  Cache Write          115
+  Total Tokens         214.3K
 ```
 
 ### Context breakdown
 
-Where do your input tokens come from? Tool outputs usually dominate.
+Where do your input tokens come from? Tool outputs usually dominate. Token estimates here are based on character length (~4 chars per token).
 
 ```
-Context Breakdown (by character size)
+Context Breakdown (estimated tokens from chars)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Tool outputs       ███████████████████████████████████  342.3K   66.0%
-  Tool inputs        ███████████▍                         111.0K   21.4%
-  System message     ███▊                                 36.0K    6.9%
-  Assistant text     ██▎                                  21.0K    4.0%
-  Reasoning          ▋                                    5.6K     1.1%
-  User text          ▍                                    2.8K     0.5%
-  Total                                                   518.6K   ~129.7K tokens
+  Tool outputs       ███████████████████████████████████ 76.7K    59.4%
+  Tool inputs        ███████████████                     33.4K    25.8%
+  Assistant text     ████                                9.1K     7.0%
+  System message     ████                                9.0K     7.0%
+  User text                                              483      0.4%
+  Reasoning                                              408      0.3%
+  Total                                                  129.1K
 ```
 
 ### Tool usage by type
@@ -118,17 +128,16 @@ Context Breakdown (by character size)
 Which **categories** of tool calls consume the most context? Bash calls are sub-categorized by command (parsed with [just-bash](https://github.com/vercel-labs/just-bash)).
 
 ```
-Tool Context Usage (output + input chars)
+Tool Context Usage (output + input tokens)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  read               ███████████████████████████████████  83.3K    18.4%  (35 calls)
-  bash (curl)        ██████████████████████▍              53.0K    11.7%  (2 calls)
-  skill              ████████████████████▎                48.0K    10.6%  (3 calls)
-  bash (cd)          ██████████████████▉                  44.7K    9.9%   (10 calls)
-  webfetch           █████████████████▎                   41.0K    9.0%   (1 calls)
-  write              █████████████████▎                   40.9K    9.0%   (15 calls)
-  edit               ████████████████▉                    40.0K    8.8%   (39 calls)
-  task               ██████████████▊                      35.1K    7.7%   (6 calls)
-  bash (pnpm)        ███████▍                             17.5K    3.9%   (20 calls)
+  read               ███████████████████████████████████ 28.2K    25.6%  (50 calls)
+  edit               ████████████████████████▌           19.7K    17.9%  (45 calls)
+  websearch          ██████████████████                  14.4K    13.1%  (3 calls)
+  bash (git)         ██████████▌                         8.4K     7.6%   (35 calls)
+  bash (pnpm)        ████████▌                           6.8K     6.2%   (31 calls)
+  task               ███████▌                            6.0K     5.4%   (5 calls)
+  bash (tuistory)    ██████▌                             5.3K     4.8%   (46 calls)
+  grep               █████                               4.2K     3.8%   (17 calls)
 ```
 
 ### Biggest individual calls
@@ -136,13 +145,13 @@ Tool Context Usage (output + input chars)
 Which **specific** tool invocations used the most context? Labels show the command, file path, URL, or description so you know exactly what happened.
 
 ```
-Biggest Individual Tool Calls (by context size)
+Biggest Individual Tool Calls
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  bash: curl -L https://raw.githubusercontent.com/remorses/goke/main/R…  ████████████████  51.3K  26.2%
-  webfetch: https://github.com/vercel-labs/just-bash/blob/main/package…  ████████████▉     41.0K  20.9%
-  skill: errore                                                          ████████▎         26.3K  13.4%
-  skill: npm-package                                                     ██████▌           20.5K  10.5%
-  task: Read openplexer ACP usage                                        ███▍              10.8K  5.5%
+  websearch: pnpm onlyBuiltDependencies postinstall blocked global …  ████████████████████ 5.8K  19.2%
+  websearch: pnpm dlx pnpm install global postinstall scripts disab…  ████████████████     4.7K  15.4%
+  websearch: bunx bun install global postinstall lifecycle scripts … █████████████         3.9K  12.7%
+  read: .../cli/src/opencode.ts                                       ███████████          3.3K  10.7%
+  bash: git diff -- ':!pnpm-lock.yaml'                                ██████████           2.9K  9.5%
 ```
 
 ### Slowest individual calls
@@ -150,13 +159,13 @@ Biggest Individual Tool Calls (by context size)
 Which tool calls took the most wall-clock time?
 
 ```
-Slowest Individual Tool Calls (by duration)
+Slowest Individual Tool Calls
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  task: Read openplexer ACP usage                                        ████████████████  7.2m   31.3%
-  task: Explore ACP spec in opencode                                     ███████████████▎  6.8m   29.6%
-  task: Oracle review contextanalyzer                                    █████████▍        4.2m   18.1%
-  task: Read just-bash parser                                            ██████▍           2.8m   12.3%
-  bash: pkill -f 'opencode serve' 2>/dev/null; sleep 1                   ██▎               57.9s  4.2%
+  task: Oracle re-review after fixes                    ████████████████████ 6.1m   32.5%
+  task: Oracle review pinned opencode                   █████████████████▌   5.4m   28.9%
+  task: Oracle review bundled opencode                  ████████████████▌    5.1m   27.1%
+  task: Explore opencode binary resolution              ██▌                  45.5s  4.0%
+  googlesearch: does bunx or bun install -g disable…    █▌                   31.9s  2.8%
 ```
 
 ## Use cases
@@ -204,6 +213,8 @@ diff <(jq '.contextBreakdown' before.json) <(jq '.contextBreakdown' after.json)
 
 ## How context is measured
 
-OpenCode reports **per-message token counts** but not per-tool-call token counts. contextanalyzer estimates tool context contribution by measuring **character length** of tool inputs and outputs (~4 chars per token for English text). This is a close approximation, not an exact count.
+The **session overview** shows exact token counts from the OpenCode API. `AssistantMessage.tokens` is a **context window snapshot** at each turn (not incremental). contextanalyzer reads the last assistant message's snapshot to get the current context size. Total prompt tokens = `input + cache.read + cache.write`, where `input` represents only non-cached tokens.
 
-The **prompt tokens** shown in the overview are exact values from the API: `input + cache.read + cache.write`. The `input` field from OpenCode represents only non-cached tokens, so the full prompt size includes all three.
+**Cost** is the exception: it is incremental per-message, so it is summed across all assistant messages for the session total.
+
+The **context breakdown** and **tool histograms** estimate token contribution by measuring **character length** of tool inputs and outputs (~4 chars per token). This is a rough approximation for comparing relative sizes, not an exact count.

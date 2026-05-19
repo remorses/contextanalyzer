@@ -1,6 +1,6 @@
 {
   "name": "contextanalyzer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Analyze OpenCode session context usage and tool call performance with terminal histograms.",
   "type": "module",
   "bin": "dist/cli.js",

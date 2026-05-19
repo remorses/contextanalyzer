@@ -1,5 +1,13 @@
 # contextanalyzer
 
+## 0.2.1
+
+1. **Added installable AI agent skill** — agents can now install the contextanalyzer skill to understand how to debug OpenCode sessions:
+   ```bash
+   npx -y skills add remorses/contextanalyzer
+   ```
+   The skill tells agents to run `contextanalyzer --help` and read the README before analyzing token and duration breakdowns.
+
 ## 0.2.0
 
 1. **Fixed token computation to use snapshot-based tracking** — OpenCode reports token counts as cumulative context snapshots, not per-message increments. The analyzer now correctly reads the last non-zero snapshot for session totals and sums cost incrementally across assistant messages. Previously token totals could be inflated or incorrect.

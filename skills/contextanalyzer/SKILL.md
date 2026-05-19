@@ -8,8 +8,6 @@ description: >
   or compare duration breakdowns for slow tools and subagents.
 ---
 
-<!-- Skill instructions for agents using the contextanalyzer CLI. -->
-
 # contextanalyzer
 
 contextanalyzer reads OpenCode session history and prints terminal histograms for context tokens and wall-clock duration.
